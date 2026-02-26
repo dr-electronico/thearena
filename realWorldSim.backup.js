@@ -3,15 +3,13 @@
 //           1st/3rd person camera, male/female character model.
 
 class RealWorldSim {
-    constructor(gender = 'male', playerName = 'Katniss', shouldLoad = false) {
+    constructor(gender = 'male') {
         this.scene = null;
         this.camera = null;
         this.renderer = null;
         this.ground = null;
 
-        this.gender = gender;
-        this.playerName = playerName;
-        this.shouldLoad = shouldLoad;
+        this.gender = gender; // 'male' | 'female'
         this.keys = {};
         this.mouse = { x: 0, y: 0 };
         this.clock = new THREE.Clock();
@@ -91,10 +89,6 @@ class RealWorldSim {
         this.aimFOV = 32;
         this.currentFOV = 75;
 
-        // ── SAVE SYSTEM ─────────────────────────────
-        this.saveTimer = 0;
-        this.saveInterval = 5.0; // Seconds between autosaves
-
         // ── Animals & World Pop ─────────────────────
         this.animals = [];      // { mesh, type, state, t, targetVel, targetRot }
         this.environmentMeshData = {
@@ -104,8 +98,6 @@ class RealWorldSim {
         this.twigInst = null;   // Reference to the mesh for updates
 
         this.campfires = [];    // { mesh, sticks: 0, isLit: false }
-        this.isClimbing = false;
-        this.climbingTreePos = null;
 
         // Day/Night Cycle
         this.dayCycleTime = 0;
@@ -114,102 +106,6 @@ class RealWorldSim {
         this.hemiLight = null;
 
         this.init();
-
-        // Load if requested
-        if (this.shouldLoad) {
-            this.loadData();
-        } else {
-            this.saveData(); // Initial save
-        }
-    }
-
-    // ─────────────────────────────────────────────
-    // PERSISTENCE
-    // ─────────────────────────────────────────────
-    saveData() {
-        if (!this.playerName) return;
-
-        const data = {
-            playerName: this.playerName,
-            gender: this.gender,
-            health: this.health,
-            hydration: this.hydration,
-            hunger: this.hunger,
-            dayCycleTime: this.dayCycleTime,
-            bottleWater: this.bottleWater,
-            activeSlot: this.activeSlot,
-            inventory: this.inventory,
-            pos: {
-                x: this.player.position.x,
-                y: this.player.position.y,
-                z: this.player.position.z
-            },
-            rot: this.player.rotationY
-        };
-
-        localStorage.setItem('thearena_save', JSON.stringify(data));
-        console.log("Game Saved for " + this.playerName);
-    }
-
-    loadData() {
-        const saved = localStorage.getItem('thearena_save');
-        if (!saved) return;
-
-        try {
-            const data = JSON.parse(saved);
-            this.playerName = data.playerName || this.playerName;
-            this.gender = data.gender || this.gender;
-            this.health = data.health !== undefined ? data.health : 100;
-            this.hydration = data.hydration !== undefined ? data.hydration : 100;
-            this.hunger = data.hunger !== undefined ? data.hunger : 100;
-            this.dayCycleTime = data.dayCycleTime !== undefined ? data.dayCycleTime : 0;
-            this.bottleWater = data.bottleWater !== undefined ? data.bottleWater : 0;
-            this.activeSlot = data.activeSlot !== undefined ? data.activeSlot : 0;
-
-            if (data.inventory) {
-                this.inventory = data.inventory;
-                // Re-equip weapon if slot is active
-                if (this.inventory[this.activeSlot]) {
-                    this.equipWeapon(this.activeSlot);
-                }
-            }
-
-            if (data.pos) {
-                this.player.position.set(data.pos.x, data.pos.y, data.pos.z);
-            }
-            if (data.rot !== undefined) {
-                this.player.rotationY = data.rot;
-            }
-
-            this.updateHUD();
-            this.showItemMsg(`Welcome back, ${this.playerName}`);
-        } catch (e) {
-            console.error("Failed to load game", e);
-        }
-    }
-
-    updateHUD() {
-        // 1. Survival Bars
-        const setBar = (id, val, valId) => {
-            const el = document.getElementById(id);
-            const ve = document.getElementById(valId);
-            if (el) el.style.width = Math.max(0, val) + '%';
-            if (ve) ve.textContent = Math.ceil(Math.max(0, val));
-        };
-        setBar('bar-health', this.health, 'val-health');
-        setBar('bar-hydration', this.hydration, 'val-hydration');
-        setBar('bar-hunger', this.hunger, 'val-hunger');
-
-        // 2. Inventory Slots
-        for (let i = 0; i < this.inventory.length; i++) {
-            this.refreshInventorySlot(i);
-        }
-
-        // 3. Identity (Sync from JS to HUD just in case)
-        const nameEl = document.getElementById('hud-player-name');
-        if (nameEl && nameEl.textContent !== this.playerName) {
-            nameEl.textContent = this.playerName;
-        }
     }
 
     init() {
@@ -309,9 +205,8 @@ class RealWorldSim {
                 document.querySelectorAll('.inv-slot').forEach((s, i) => s.classList.toggle('active', i === idx));
                 this.equipWeapon(idx);
             }
-            // Pickup or Climb
+            // Pickup nearest weapon crate or twig
             if (e.key.toLowerCase() === 'e') {
-                if (this.tryClimb()) return;
                 this.tryPickup();
                 this.tryPickupTwig();
             }
@@ -421,30 +316,30 @@ class RealWorldSim {
         this.hydration = Math.max(0, this.hydration - 0.4);
         this.hunger = Math.max(0, this.hunger - 0.25);
 
-        // ── Damage: if Hydration OR Hunger ≤ 10 → Drain Health ────────
-        let isDraining = false;
-        if (this.hydration <= 10 || this.hunger <= 10) {
-            this.health = Math.max(0, this.health - 5);
+        // ── Critical damage: BOTH stats ≤ 10 → -10 HP + red flash ──────
+        if (this.hydration <= 10 && this.hunger <= 10) {
+            this.health = Math.max(0, this.health - 10);
             this.triggerDamageFlash();
-            isDraining = true;
         }
 
-        // ── Health regen: if Hydration OR Hunger ≥ 50 (and not draining) ─
-        if (!isDraining && (this.hydration >= 50 || this.hunger >= 50)) {
-            this.health = Math.min(100, this.health + 2);
+        // ── Health regen: BOTH stats > 30 → +0.1 HP/s ──────────────────
+        if (this.hydration > 30 && this.hunger > 30) {
+            this.health = Math.min(100, this.health + 0.1);
         }
 
-        this.updateHUD();
+        // Update DOM
+        const setBar = (id, val, valId) => {
+            const el = document.getElementById(id);
+            const ve = document.getElementById(valId);
+            if (el) el.style.width = val + '%';
+            if (ve) ve.textContent = Math.ceil(val);
+        };
+        setBar('bar-health', this.health, 'val-health');
+        setBar('bar-hydration', this.hydration, 'val-hydration');
+        setBar('bar-hunger', this.hunger, 'val-hunger');
 
         if (this.health <= 0) {
             this.triggerDeath();
-        }
-
-        // ── Auto-save ──
-        this.saveTimer += 1; // Since this runs once per second (survivalTimer check at top)
-        if (this.saveTimer >= this.saveInterval) {
-            this.saveTimer = 0;
-            this.saveData();
         }
     }
 
@@ -561,7 +456,6 @@ class RealWorldSim {
 
             if (!isStackable || count <= 0) return slot;
         }
-        this.saveData();
         return this.activeSlot;
     }
 
@@ -610,23 +504,6 @@ class RealWorldSim {
                 hint.style.display = 'block';
                 hint.textContent = `[E] Recoger rama`;
             }
-            return;
-        }
-
-        // ── Climbing Check ────────────────────────
-        const nearby = this.getNearbyObjects(this.player.position.x, this.player.position.z);
-        for (const obj of nearby) {
-            if (obj.type === 'tree') {
-                const dx = this.player.position.x - obj.x;
-                const dz = this.player.position.z - obj.z;
-                if (dx * dx + dz * dz < 1.6 * 1.6) {
-                    if (hint) {
-                        hint.style.display = 'block';
-                        hint.textContent = this.isClimbing ? '[E] Bajar del árbol' : '[E] Escalar árbol';
-                    }
-                    return;
-                }
-            }
         }
     }
 
@@ -645,62 +522,10 @@ class RealWorldSim {
             twig.collected = true;
 
             this.addToInventory('Rama', '🌳', 1);
-            this.saveData();
             if (this.inventory[this.activeSlot] && this.inventory[this.activeSlot].type === 'Rama') {
                 this.equipWeapon(this.activeSlot);
             }
         }
-    }
-
-    tryClimb() {
-        if (this.isClimbing) {
-            this.exitClimb();
-            return true;
-        }
-
-        const nearby = this.getNearbyObjects(this.player.position.x, this.player.position.z);
-        for (const obj of nearby) {
-            if (obj.type === 'tree') {
-                const dx = this.player.position.x - obj.x;
-                const dz = this.player.position.z - obj.z;
-                if (dx * dx + dz * dz < 2.0 * 2.0) {
-                    this.isClimbing = true;
-                    this.climbingTreePos = { x: obj.x, z: obj.z, r: obj.r, h: obj.h, isPine: obj.isPine };
-
-                    // Static attachment: Snap player to tree trunk surface
-                    const angle = Math.atan2(dz, dx);
-                    const snapDist = 0.85;
-                    this.player.position.x = obj.x + Math.cos(angle) * snapDist;
-                    this.player.position.z = obj.z + Math.sin(angle) * snapDist;
-                    this.player.position.y += 0.8;
-
-                    this.player.isOnGround = false;
-                    this.player.verticalVelocity = 0;
-                    this.showItemMsg('🪜 Trepando árbol (W/S para subir/bajar)');
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    exitClimb() {
-        if (!this.isClimbing) return;
-
-        // Push the player away from the trunk so they don't get stuck in collision
-        if (this.climbingTreePos) {
-            const dx = this.player.position.x - this.climbingTreePos.x;
-            const dz = this.player.position.z - this.climbingTreePos.z;
-            const angle = Math.atan2(dz, dx);
-            const pR = 0.4;
-            const pushDist = (this.climbingTreePos.r || 0.8) + pR + 0.35; // increased push for safety
-            this.player.position.x = this.climbingTreePos.x + Math.cos(angle) * pushDist;
-            this.player.position.z = this.climbingTreePos.z + Math.sin(angle) * pushDist;
-        }
-
-        this.isClimbing = false;
-        this.climbingTreePos = null;
-        this.showItemMsg('🪜 Bajaste del árbol');
     }
 
     getNearestTwig() {
@@ -2064,23 +1889,22 @@ class RealWorldSim {
             if (Math.abs(z - riverZ) < 60) { i--; continue; }
 
             const isPine = Math.random() > 0.5;
-            let h = 1.0;
             if (isPine) {
-                h = 15 + Math.random() * 10;
-                dummy.position.set(x, h / 2, z); dummy.scale.set(1, h, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+                const height = 15 + Math.random() * 10;
+                dummy.position.set(x, height / 2, z); dummy.scale.set(1, height, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
                 pineTrunkInst.setMatrixAt(pine, dummy.matrix);
-                dummy.position.set(x, h, z); dummy.scale.set(1.5, 0.4, 1.5); dummy.updateMatrix();
+                dummy.position.set(x, height, z); dummy.scale.set(1.5, 0.4, 1.5); dummy.updateMatrix();
                 pineLeavesInst.setMatrixAt(pine, dummy.matrix);
                 pine++;
             } else {
-                h = 1.0 + Math.random() * 6.0;
-                dummy.position.set(x, h / 2, z); dummy.scale.set(1, h, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+                const scale = 1.0 + Math.random() * 6.0;
+                dummy.position.set(x, scale / 2, z); dummy.scale.set(1, scale, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
                 trunkInst.setMatrixAt(reg, dummy.matrix);
-                dummy.position.set(x, h + 4, z); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+                dummy.position.set(x, scale + 4, z); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
                 leavesInst.setMatrixAt(reg, dummy.matrix);
                 reg++;
             }
-            const tree = { type: 'tree', x, z, r: 0.8, h: h, isPine: isPine };
+            const tree = { type: 'tree', x, z, r: 0.8 };
             this.forestData.push(tree);
             this.addToSpatialHash(x, z, tree);
         }
@@ -2274,20 +2098,6 @@ class RealWorldSim {
                     a.t = 1; // pause shortly
                 }
 
-                // Tree/Rock collision for animals
-                const nearby = this.getNearbyObjects(a.mesh.position.x, a.mesh.position.z);
-                for (const obj of nearby) {
-                    const dx = a.mesh.position.x - obj.x;
-                    const dz = a.mesh.position.z - obj.z;
-                    const rSum = obj.r + 0.6; // animal radius approx
-                    if (dx * dx + dz * dz < rSum * rSum) {
-                        a.mesh.position.x -= vx;
-                        a.mesh.position.z -= vz;
-                        a.targetRot += Math.PI * 0.5 + Math.random(); // Turn away
-                        break;
-                    }
-                }
-
                 // Arena boundary check
                 if (a.mesh.position.length() > this.arenaRadius - 20) {
                     a.targetRot += Math.PI; // turn around
@@ -2346,82 +2156,27 @@ class RealWorldSim {
     update() {
         if (!this.simulationRunning || this._isDead) return;
 
-        const dt = Math.min(this.clock.getDelta(), 0.05);
-
-        // ── 1. Update Crouch State first ────────────────
-        this.player.isCrouching = !!this.keys['shift'];
-        const currentHeight = this.player.isCrouching ? this.player.crouchHeight : this.player.height;
-
-        // ── 2. Global World State (Always Update) ───────
-        this.updateSurvival(dt);
-        this.updateAnimals(dt);
-        this.updateProjectiles(dt);
-        this.updateDayNight(dt);
-        this.updateFOV(dt);
-        this.updateCampfires(dt);
-        this.updateCharge(dt);
-        this.updateDrinkAnim(dt);
-        this.checkNearWeapon();
-
-        // ── 3. Player Movement & Physics ────────────────
-        if (this.isClimbing) {
-            // Rotation (Look around)
-            this.player.rotationY -= this.mouse.x;
-            this.player.rotationX -= this.mouse.y;
-            this.player.rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.player.rotationX));
-            this.mouse.x = 0; this.mouse.y = 0;
-
-            // ── Sticky Attachment ─────────────────────
-            if (this.climbingTreePos) {
-                const dx = this.player.position.x - this.climbingTreePos.x;
-                const dz = this.player.position.z - this.climbingTreePos.z;
-                const angle = Math.atan2(dz, dx);
-                const snapDist = 0.85;
-                this.player.position.x = this.climbingTreePos.x + Math.cos(angle) * snapDist;
-                this.player.position.z = this.climbingTreePos.z + Math.sin(angle) * snapDist;
-            }
-
-            const climbSpeed = 5 * dt;
-            if (this.keys['w']) this.player.position.y += climbSpeed;
-            if (this.keys['s']) this.player.position.y -= climbSpeed;
-
-            // ── Height Limit (Stay on trunk, below leaves) ──
-            let maxH = 25;
-            if (this.climbingTreePos) {
-                // Pine leaves (sphere) start at h - 4. Regular leaves (cone) start at h - 1.
-                // We leave a small extra buffer so the camera doesn't clip into leaves at all.
-                const leavesOffset = this.climbingTreePos.isPine ? 4.8 : 1.8;
-                maxH = this.climbingTreePos.h - leavesOffset;
-            }
-            this.player.position.y = Math.min(this.player.position.y, maxH + currentHeight);
-
-            // Exit if reached floor
-            const groundY = 0;
-            if (this.player.position.y < groundY + currentHeight + 0.1) {
-                this.exitClimb();
-                this.player.position.y = groundY + currentHeight;
-                this.player.isOnGround = true;
-            }
-
-            this.animatePlayerMesh(false, false, false, dt);
-            this.updateCamera(currentHeight);
-            return;
-        }
-
-        // Normal rotation
+        // Look
         this.player.rotationY -= this.mouse.x;
         this.player.rotationX -= this.mouse.y;
         this.player.rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.player.rotationX));
         this.mouse.x = 0; this.mouse.y = 0;
+
+        // Crouch
+        this.player.isCrouching = !!this.keys['shift'];
+        const currentHeight = this.player.isCrouching ? this.player.crouchHeight : this.player.height;
 
         // ── Water detection ──────────────────────
         const riverZCenter = Math.sin(this.player.position.x / 150) * 120 + 350;
         const waterSurface = 0.05;
         const distToRiver = Math.abs(this.player.position.z - riverZCenter);
         const overRiver = distToRiver < 35;
+        // Only "in water" if they're at or below the surface
+        // inWater always uses standing height to detect proximity to river surface
+        // (so pressing Shift while on water doesn't suddenly make inWater false)
         const inWater = overRiver && (this.player.position.y <= waterSurface + this.player.height + 0.3);
 
-        // Horizontal Movement
+        // ── Movement ─────────────────────────────
         const moveDir = new THREE.Vector3();
         if (this.keys['w']) moveDir.z -= 1;
         if (this.keys['s']) moveDir.z += 1;
@@ -2432,7 +2187,7 @@ class RealWorldSim {
         if (isMoving) {
             let spd = this.player.speed;
             if (this.player.isCrouching) spd *= 0.5;
-            if (this.isSprinting && !this.player.isCrouching) spd *= 1.9;
+            if (this.isSprinting && !this.player.isCrouching) spd *= 1.9;  // sprint boost
             if (inWater && this.player.position.y < waterSurface - 0.5) spd *= 0.55;
 
             moveDir.normalize().multiplyScalar(spd);
@@ -2451,8 +2206,11 @@ class RealWorldSim {
                     const dx = nextX - obj.x, dz = nextZ - obj.z;
                     if (dx * dx + dz * dz < (obj.r + pR) ** 2) {
                         if (obj.type === 'tree') {
+                            // Trees block if player is at ground level (not deep in river)
                             if (pFeet > -1) { col = true; break; }
                         } else if (obj.type === 'rock') {
+                            // Block only if player feet are below the rock top (can't jump over)
+                            // Allow jump-over: player is blocked only when feet below topY
                             if (pFeet < obj.topY + 0.05 && this.player.position.y < obj.topY + currentHeight + 0.4) {
                                 col = true; break;
                             }
@@ -2460,15 +2218,24 @@ class RealWorldSim {
                     }
                 }
 
+                // Pedestal
                 if (!col) {
                     for (const p of this.pedestals) {
                         const dx = nextX - p.x, dz = nextZ - p.z;
-                        if (dx * dx + dz * dz < (pR + p.r) ** 2 && this.player.position.y < p.h + 0.15) { col = true; break; }
+                        if (dx * dx + dz * dz < (p.r + pR) ** 2 && this.player.position.y < p.h + 0.15) {
+                            col = true; break;
+                        }
                     }
                 }
+
+                // Solid boxes (Cornucopia walls)
                 if (!col) {
                     for (const b of this.solidBoxes) {
-                        if (nextX >= b.x1 - pR && nextX <= b.x2 + pR && nextZ >= b.z1 - pR && nextZ <= b.z2 + pR && this.player.position.y < b.h) { col = true; break; }
+                        if (nextX >= b.x1 - pR && nextX <= b.x2 + pR &&
+                            nextZ >= b.z1 - pR && nextZ <= b.z2 + pR &&
+                            this.player.position.y < b.h) {
+                            col = true; break;
+                        }
                     }
                 }
 
@@ -2478,26 +2245,42 @@ class RealWorldSim {
                 }
             }
         }
-        this.animatePlayerMesh(isMoving, this.player.isCrouching, this.isSprinting, dt);
 
-        // Vertical physics
+        // Animate player mesh
+        const dt = Math.min(this.clock.getDelta(), 0.05);
+        this.animatePlayerMesh(isMoving, this.player.isCrouching, this.isSprinting, dt);
+        this.updateSurvival(dt);
+        this.checkNearWeapon();
+        this.updateCharge(dt);
+        this.updateDrinkAnim(dt);
+        this.updateAnimals(dt);
+        this.updateProjectiles(dt);
+        this.updateFOV(dt);
+        this.updateCampfires(dt);
+        this.updateDayNight(dt);
+
+        // ── Vertical physics ──────────────────────
+        // Determine "floor" height at player X,Z
         let groundY = 0;
+        // Pedestal standing?
         for (const p of this.pedestals) {
             const dx = this.player.position.x - p.x, dz = this.player.position.z - p.z;
             if (dx * dx + dz * dz < p.r * p.r) { groundY = p.h; break; }
         }
+        // Rock standing?
         for (const r of this.getNearbyObjects(this.player.position.x, this.player.position.z)) {
-            if (r.type === 'rock') {
-                const dx = this.player.position.x - r.x, dz = this.player.position.z - r.z;
-                if (dx * dx + dz * dz < r.r * r.r * 0.7) {
-                    if (r.topY > groundY) groundY = r.topY;
-                }
+            if (r.type !== 'rock') continue;
+            const dx = this.player.position.x - r.x, dz = this.player.position.z - r.z;
+            if (dx * dx + dz * dz < r.r * r.r * 0.7) {
+                if (r.topY > groundY) groundY = r.topY;
             }
         }
 
         if (inWater) {
             const baseWater = waterSurface + currentHeight;
+
             if (!this.player.isCrouching) {
+                // Not crouching → float up gradually (buoyancy)
                 if (this.player.position.y < baseWater - 0.05) {
                     this.player.verticalVelocity += 0.022;
                     this.player.verticalVelocity *= 0.82;
@@ -2510,19 +2293,27 @@ class RealWorldSim {
                     this.updateCamera(currentHeight);
                     if (this.sun) { this.sun.target.position.set(this.player.position.x, 0, this.player.position.z); this.sun.target.updateMatrixWorld(); }
                     return;
-                } else { groundY = -15; }
+                } else {
+                    // NO CAMINAR SOBRE EL AGUA:
+                    // If at surface but not buoyancy-ing, force fall/sink unless they specifically use buoyancy
+                    groundY = -15; // Bottom of trench
+                }
             } else {
+                // Crouching → sink hard and fast
                 this.player.isOnGround = false;
                 const sinkTargetY = -14.5 + currentHeight;
+
+                // Apply strong downward force while not at bottom
                 if (this.player.position.y > sinkTargetY + 0.05) {
-                    this.player.verticalVelocity -= 0.05;
-                    this.player.verticalVelocity = Math.max(this.player.verticalVelocity, -0.4);
+                    this.player.verticalVelocity -= 0.05; // strong pull down
+                    this.player.verticalVelocity = Math.max(this.player.verticalVelocity, -0.4); // cap speed
                 } else {
                     this.player.verticalVelocity = 0;
                     this.player.position.y = sinkTargetY;
                 }
+
                 this.player.position.y += this.player.verticalVelocity;
-                if (this.keys[' ']) this.player.verticalVelocity = 0.15;
+                if (this.keys[' ']) { this.player.verticalVelocity = 0.15; } // swim up
 
                 this.updateCamera(currentHeight);
                 if (this.sun) { this.sun.target.position.set(this.player.position.x, 0, this.player.position.z); this.sun.target.updateMatrixWorld(); }
@@ -2530,8 +2321,10 @@ class RealWorldSim {
             }
         }
 
+        // Normal land physics
         const baseY = groundY + currentHeight;
         if (this.player.isOnGround && this.player.position.y > baseY + 0.12) this.player.isOnGround = false;
+
         if (this.keys[' '] && this.player.isOnGround) {
             this.player.verticalVelocity = 0.26;
             this.player.isOnGround = false;
@@ -2550,6 +2343,7 @@ class RealWorldSim {
             this.sun.target.position.set(this.player.position.x, 0, this.player.position.z);
             this.sun.target.updateMatrixWorld();
         }
+
         this.updateCamera(currentHeight);
     }
 

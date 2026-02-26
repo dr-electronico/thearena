@@ -402,31 +402,6 @@
             pointer-events: none;
         }
 
-        #player-identity-hud {
-            margin-bottom: 4px;
-            padding-bottom: 4px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            max-width: 170px;
-        }
-
-        #hud-player-name {
-            display: block;
-            font-size: 13px;
-            font-weight: 700;
-            color: #f39c12;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-        }
-
-        #hud-player-district {
-            display: block;
-            font-size: 9px;
-            color: rgba(255, 255, 255, 0.4);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
         .stat-row {
             display: flex;
             align-items: center;
@@ -660,54 +635,6 @@
             }
         }
 
-        /* ── NAME INPUT ── */
-        .name-input-wrap {
-            width: 100%;
-            margin-bottom: 25px;
-            text-align: center;
-        }
-
-        #player-name-input {
-            background: rgba(0, 0, 0, 0.4);
-            border: 2px solid rgba(255, 255, 255, 0.2);
-            border-radius: 8px;
-            padding: 12px 20px;
-            color: #fff;
-            font-family: 'Outfit', sans-serif;
-            font-size: 1.1rem;
-            width: 80%;
-            max-width: 400px;
-            outline: none;
-            transition: all 0.3s ease;
-            text-align: center;
-        }
-
-        #player-name-input:focus {
-            border-color: #f39c12;
-            background: rgba(0, 0, 0, 0.6);
-            box-shadow: 0 0 15px rgba(243, 156, 18, 0.3);
-        }
-
-        #continue-btn-wrap {
-            margin-top: 20px;
-            display: none;
-        }
-
-        .btn-continue {
-            background: rgba(46, 204, 113, 0.35);
-            border: 1px solid #2ecc71;
-            color: #fff;
-            padding: 8px 15px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: all 0.2s;
-        }
-
-        .btn-continue:hover {
-            background: rgba(46, 204, 113, 0.5);
-        }
-
         /* ── DAMAGE FLASH ── */
         #damage-flash {
             position: fixed;
@@ -741,11 +668,6 @@
             <!-- Step 1: Character Select -->
             <div class="step active" id="step1">
                 <div class="step-label">Step 1 — Choose your tribute</div>
-
-                <div class="name-input-wrap">
-                    <input type="text" id="player-name-input" placeholder="Enter your name, tribute..." maxlength="20">
-                </div>
-
                 <div class="char-cards">
                     <div class="char-card" id="card-male" onclick="selectChar('male')">
                         <div class="char-avatar">🧑</div>
@@ -760,12 +682,6 @@
                         <div class="char-check">✓</div>
                     </div>
                 </div>
-
-                <div id="continue-btn-wrap">
-                    <button class="btn-continue" onclick="selectContinue()">Continue as <span
-                            id="saved-name">Tribute</span>?</button>
-                </div>
-
                 <button class="btn" id="nextBtn" disabled onclick="startGame()">Enter the Arena</button>
             </div>
         </div>
@@ -785,10 +701,6 @@
 
     <!-- Survival Bars -->
     <div id="survival-hud">
-        <div id="player-identity-hud">
-            <span id="hud-player-name">Tribute</span>
-            <span id="hud-player-district">District 12</span>
-        </div>
         <div class="stat-row">
             <div class="stat-icon">❤️</div>
             <div class="stat-bar-bg">
@@ -875,41 +787,16 @@
     <script src="./realWorldSim.js"></script>
     <script>
         let selectedChar = null;
-        let loadSavedData = false;
-
-        // Check for saved game on load
-        window.onload = () => {
-            const saved = localStorage.getItem('thearena_save');
-            if (saved) {
-                try {
-                    const data = JSON.parse(saved);
-                    document.getElementById('continue-btn-wrap').style.display = 'block';
-                    document.getElementById('saved-name').textContent = data.playerName || 'Tribute';
-                    document.getElementById('player-name-input').value = data.playerName || '';
-                    selectedChar = data.gender || 'male';
-                } catch (e) { }
-            }
-        };
 
         function selectChar(type) {
             selectedChar = type;
-            loadSavedData = false;
             document.querySelectorAll('.char-card').forEach(c => c.classList.remove('selected'));
             document.getElementById('card-' + type).classList.add('selected');
             document.getElementById('nextBtn').disabled = false;
         }
 
-        function selectContinue() {
-            loadSavedData = true;
-            startGame();
-        }
-
         function startGame() {
-            const nameInput = document.getElementById('player-name-input');
-            const playerName = nameInput.value.trim() || 'Katniss';
-
-            if (!selectedChar && !loadSavedData) return;
-
+            if (!selectedChar) return;
             const overlay = document.getElementById('overlay');
             overlay.classList.add('hidden');
             setTimeout(() => overlay.style.display = 'none', 800);
@@ -922,11 +809,8 @@
             document.getElementById('survival-hud').style.display = 'flex';
             document.getElementById('inventory-hud').style.display = 'flex';
 
-            document.getElementById('hud-player-name').textContent = playerName;
-            document.getElementById('hud-player-district').textContent = selectedChar === 'male' ? 'District 2' : 'District 12';
-
-            // Pass gender and load flag to game
-            window.game = new RealWorldSim(selectedChar, playerName, loadSavedData);
+            // Pass gender to game
+            window.game = new RealWorldSim(selectedChar);
         }
     </script>
 </body>
