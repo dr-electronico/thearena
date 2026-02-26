@@ -62,6 +62,7 @@ class RealWorldSim {
         // ── Countdown System ──
         this.countdown = 10;
         this.isCountdownActive = true;
+        this.underwaterTimer = 0;
         this.activeSlot = 0;
         this.heldWeaponMesh = null;
         this.weaponItems = [];
@@ -607,6 +608,23 @@ class RealWorldSim {
         // ── Health regen: if Hydration OR Hunger ≥ 50 (and not draining) ─
         if (!isDraining && (this.hydration >= 50 || this.hunger >= 50)) {
             this.health = Math.min(100, this.health + 2);
+        }
+
+        // ── Drowning: if head submerged for > 15s ───────────
+        const riverZ = Math.sin(this.player.position.x / 150) * 120 + 350;
+        const distToRiver = Math.abs(this.player.position.z - riverZ);
+        const isSubmerged = distToRiver < 35 && this.player.position.y < 0.05;
+
+        if (isSubmerged) {
+            this.underwaterTimer++;
+            if (this.underwaterTimer > 15) {
+                this.health = Math.max(0, this.health - 15);
+                this.triggerDamageFlash();
+                this.playSound('damage', 0.8);
+                this.showItemMsg("⚠️ ¡TE ESTÁS AHOGANDO!");
+            }
+        } else {
+            this.underwaterTimer = 0;
         }
 
         this.updateHUD();
