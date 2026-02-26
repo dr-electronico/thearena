@@ -124,7 +124,7 @@ class RealWorldSim {
 
         // Day/Night Cycle
         this.dayCycleTime = 0;
-        this.totalCycleDuration = 600; // 10 minutes total (5 min day / 5 min night)
+        this.totalCycleDuration = 240; // 4 minutes total (2 min day / 2 min night)
         this.ambientLight = null;
         this.hemiLight = null;
 
@@ -570,7 +570,7 @@ class RealWorldSim {
             if (e.button === 0 && this.isCharging) {
                 this.isCharging = false;
                 this.fireWeapon();
-                this.playSound('fire', 0.8);
+                // Sound removed as per user request
             }
             if (e.button === 2 && !NON_COMBAT.includes(activeType)) {
                 this.setAiming(false);
@@ -2810,8 +2810,8 @@ class RealWorldSim {
     }
 
     updateDayNight(dt) {
-        this.dayCycleTime += dt;
-        const cyclePercent = (this.dayCycleTime % this.totalCycleDuration) / this.totalCycleDuration;
+        this.dayCycleTime = (this.dayCycleTime + dt) % this.totalCycleDuration;
+        const cyclePercent = this.dayCycleTime / this.totalCycleDuration;
         const angle = cyclePercent * Math.PI * 2;
 
         // Rotation: Sun rises in East (+X), sets in West (-X)
