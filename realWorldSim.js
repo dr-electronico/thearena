@@ -58,6 +58,10 @@ class RealWorldSim {
 
         // Inventory (7 slots)
         this.inventory = [null, null, null, null, null, null, null];
+
+        // ── Countdown System ──
+        this.countdown = 10;
+        this.isCountdownActive = true;
         this.activeSlot = 0;
         this.heldWeaponMesh = null;
         this.weaponItems = [];
@@ -236,7 +240,29 @@ class RealWorldSim {
         window.addEventListener('mousedown', unlock);
         window.addEventListener('keydown', unlock);
 
+        this.runCountdown();
         this.loop();
+    }
+
+    runCountdown() {
+        const screen = document.getElementById('countdown-screen');
+        const number = document.getElementById('countdown-number');
+        if (!screen || !number) return;
+
+        screen.style.display = 'flex';
+
+        const interval = setInterval(() => {
+            this.countdown--;
+            number.textContent = this.countdown;
+
+            if (this.countdown <= 0) {
+                clearInterval(interval);
+                screen.style.display = 'none';
+                this.isCountdownActive = false;
+                this.showItemMsg("THE GAMES HAVE BEGUN!");
+                this.playSound('fire', 1.0); // Cannon sound
+            }
+        }, 1000);
     }
 
     // ─────────────────────────────────────────────
@@ -594,6 +620,7 @@ class RealWorldSim {
         if (this._isDead) return;
         this._isDead = true;
         this.simulationRunning = false;
+        this.playSound('fire', 1.0); // Death cannon sound
 
         const screen = document.getElementById('death-screen');
         if (screen) {
@@ -676,7 +703,7 @@ class RealWorldSim {
                 // Check type and extra data consistency (like isCooked)
                 const sameType = item && item.type === type;
                 let sameState = true;
-                if (extraData.isCooked !== undefined && item && item.isCooked !== extraData.isCooked) sameState = false;
+                if (extraData.iCooked !== undefined && item && item.isCooked !== extraData.isCooked) sameState = false;
 
                 if (sameType && sameState && item.count < STACK_LIMIT) {
                     const toAdd = Math.min(count, STACK_LIMIT - item.count);
@@ -1689,7 +1716,7 @@ class RealWorldSim {
 
         // Text
         ctx.fillStyle = '#f39c12'; // District Orange
-        ctx.font = 'bold 80px Outfit, sans-serif';
+        ctx.font = 'bold 70px Outfit, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.shadowColor = 'rgba(0,0,0,0.8)';
@@ -1711,7 +1738,7 @@ class RealWorldSim {
             depthTest: true
         });
         const sprite = new THREE.Sprite(mat);
-        sprite.scale.set(1.4, 0.35, 1); // Increased scale for legibility
+        sprite.scale.set(0.9, 0.22, 1); // Reduced scale for a more integrated look
         sprite.renderOrder = 100;
         return sprite;
     }
@@ -2559,6 +2586,22 @@ class RealWorldSim {
         if (!this.simulationRunning || this._isDead) return;
 
         const dt = Math.min(this.clock.getDelta(), 0.05);
+
+        // ── 0. Countdown State ──────────────────────────
+        if (this.isCountdownActive) {
+            // Can look around, but NOT move or starve
+            this.player.rotationY -= this.mouse.x;
+            this.player.rotationX -= this.mouse.y;
+            this.player.rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.player.rotationX));
+            this.mouse.x = 0; this.mouse.y = 0;
+
+            this.updateDayNight(dt);
+            this.updateFOV(dt);
+            this.updateAudio(dt);
+            this.updateCamera(this.player.height);
+            this.animatePlayerMesh(false, false, false, dt);
+            return;
+        }
 
         // ── 1. Update Crouch State first ────────────────
         this.player.isCrouching = !!this.keys['shift'];

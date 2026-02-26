@@ -797,6 +797,69 @@
             }
         }
 
+        /* ── COUNTDOWN SCREEN ── */
+        #countdown-screen {
+            position: fixed;
+            inset: 0;
+            z-index: 10000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at center, transparent 0%, rgba(0, 0, 0, 0.4) 100%);
+            pointer-events: none;
+        }
+
+        #countdown-number {
+            font-family: 'Cinzel', serif;
+            font-size: 180px;
+            color: #fff;
+            text-shadow: 0 0 50px rgba(231, 76, 60, 0.8);
+            animation: countPulse 1s infinite ease-out;
+        }
+
+        @keyframes countPulse {
+            0% {
+                transform: scale(3);
+                opacity: 0;
+            }
+
+            20% {
+                transform: scale(0.8);
+                opacity: 1;
+            }
+
+            80% {
+                transform: scale(1);
+                opacity: 1;
+            }
+
+            100% {
+                transform: scale(1.2);
+                opacity: 0;
+            }
+        }
+
+        .btn-death-menu {
+            margin-top: 40px;
+            padding: 14px 34px;
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: #fff;
+            font-family: 'Outfit', sans-serif;
+            font-size: 14px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.3s;
+            border-radius: 4px;
+        }
+
+        .btn-death-menu:hover {
+            background: #fff;
+            color: #000;
+            border-color: #fff;
+        }
+
         /* ── NAME INPUT ── */
         .name-input-wrap {
             width: 100%;
@@ -1192,6 +1255,12 @@
     <!-- Death Screen -->
     <div id="death-screen">
         <div id="death-text">YOU DIED</div>
+        <button class="btn-death-menu" onclick="location.reload()">Back to Menu</button>
+    </div>
+
+    <!-- Countdown Overlay -->
+    <div id="countdown-screen">
+        <div id="countdown-number">10</div>
     </div>
 
     <!-- Charge bar (LMB hold) -->
@@ -1313,7 +1382,9 @@
             const playerName = nameInput.value.trim() || 'Katniss';
 
             const overlay = document.getElementById('overlay');
+            const friendsSidebar = document.getElementById('friends-sidebar');
             overlay.classList.add('hidden');
+            if (friendsSidebar) friendsSidebar.style.display = 'none';
             setTimeout(() => overlay.style.display = 'none', 800);
             document.getElementById('hud').style.display = 'block';
             document.getElementById('camBadge').style.display = 'block';
