@@ -107,6 +107,17 @@ class RealWorldSim {
         this.isClimbing = false;
         this.climbingTreePos = null;
 
+        // ── Audio System ─────────────────────────────
+        this.audioCtx = null;
+        this.audioInited = false;
+        this.audioSources = {
+            river: null,
+            fire: null,
+            gainRiver: null,
+            gainFire: null
+        };
+        this.footstepTime = 0;
+
         // Day/Night Cycle
         this.dayCycleTime = 0;
         this.totalCycleDuration = 600; // 10 minutes total (5 min day / 5 min night)
@@ -131,24 +142,11 @@ class RealWorldSim {
 
         const data = {
             playerName: this.playerName,
-            gender: this.gender,
-            health: this.health,
-            hydration: this.hydration,
-            hunger: this.hunger,
-            dayCycleTime: this.dayCycleTime,
-            bottleWater: this.bottleWater,
-            activeSlot: this.activeSlot,
-            inventory: this.inventory,
-            pos: {
-                x: this.player.position.x,
-                y: this.player.position.y,
-                z: this.player.position.z
-            },
-            rot: this.player.rotationY
+            gender: this.gender
         };
 
         localStorage.setItem('thearena_save', JSON.stringify(data));
-        console.log("Game Saved for " + this.playerName);
+        console.log("Identity Saved for " + this.playerName);
     }
 
     loadData() {
@@ -159,33 +157,40 @@ class RealWorldSim {
             const data = JSON.parse(saved);
             this.playerName = data.playerName || this.playerName;
             this.gender = data.gender || this.gender;
-            this.health = data.health !== undefined ? data.health : 100;
-            this.hydration = data.hydration !== undefined ? data.hydration : 100;
-            this.hunger = data.hunger !== undefined ? data.hunger : 100;
-            this.dayCycleTime = data.dayCycleTime !== undefined ? data.dayCycleTime : 0;
-            this.bottleWater = data.bottleWater !== undefined ? data.bottleWater : 0;
-            this.activeSlot = data.activeSlot !== undefined ? data.activeSlot : 0;
-
-            if (data.inventory) {
-                this.inventory = data.inventory;
-                // Re-equip weapon if slot is active
-                if (this.inventory[this.activeSlot]) {
-                    this.equipWeapon(this.activeSlot);
-                }
-            }
-
-            if (data.pos) {
-                this.player.position.set(data.pos.x, data.pos.y, data.pos.z);
-            }
-            if (data.rot !== undefined) {
-                this.player.rotationY = data.rot;
-            }
 
             this.updateHUD();
-            this.showItemMsg(`Welcome back, ${this.playerName}`);
+            // Sync the name tag if it exists
+            if (this.meshParts && this.meshParts.nameTag) {
+                this.setPlayerName(this.playerName);
+            }
+            this.showItemMsg(`Tribute: ${this.playerName}`);
         } catch (e) {
-            console.error("Failed to load game", e);
+            console.error("Failed to load identity", e);
         }
+    }
+
+    setPlayerName(newName) {
+        if (!newName) return;
+        this.playerName = newName;
+        // 1. Update HUD
+        const nameEl = document.getElementById('hud-player-name');
+        if (nameEl) nameEl.textContent = this.playerName;
+
+        // 2. Update 3D Name Tag
+        if (this.meshParts && this.meshParts.nameTag) {
+            const sprite = this.meshParts.nameTag;
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 128;
+            this.drawNameTagCanvas(canvas, this.playerName);
+
+            const oldMap = sprite.material.map;
+            sprite.material.map = new THREE.CanvasTexture(canvas);
+            if (oldMap) oldMap.dispose();
+        }
+
+        // 3. Save
+        this.saveData();
     }
 
     updateHUD() {
@@ -220,7 +225,149 @@ class RealWorldSim {
         this.createPlayerMesh();
         this.setupMinimap();
         this.setupStartingInventory();
+
+        // ── Resume audio on first interaction ────────
+        const unlock = () => {
+            if (this.audioInited) return;
+            this.initAudio();
+            window.removeEventListener('mousedown', unlock);
+            window.removeEventListener('keydown', unlock);
+        };
+        window.addEventListener('mousedown', unlock);
+        window.addEventListener('keydown', unlock);
+
         this.loop();
+    }
+
+    // ─────────────────────────────────────────────
+    // AUDIO ENGINE (Procedural)
+    // ─────────────────────────────────────────────
+    initAudio() {
+        if (this.audioInited) return;
+        this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        this.audioInited = true;
+
+        // ── Shared Buffers ──
+        const bufferSize = this.audioCtx.sampleRate * 2;
+        const noiseBuffer = this.audioCtx.createBuffer(1, bufferSize, this.audioCtx.sampleRate);
+        const output = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1;
+
+        // ── Loop: River ──
+        this.audioSources.river = this.audioCtx.createBufferSource();
+        this.audioSources.river.buffer = noiseBuffer;
+        this.audioSources.river.loop = true;
+        this.audioSources.gainRiver = this.audioCtx.createGain();
+        this.audioSources.gainRiver.gain.value = 0;
+
+        const riverFilter = this.audioCtx.createBiquadFilter();
+        riverFilter.type = 'lowpass';
+        riverFilter.frequency.value = 400;
+
+        this.audioSources.river.connect(riverFilter);
+        riverFilter.connect(this.audioSources.gainRiver);
+        this.audioSources.gainRiver.connect(this.audioCtx.destination);
+        this.audioSources.river.start();
+
+        // ── Loop: Fire (Rumble/Roar) ──
+        this.audioSources.fire = this.audioCtx.createBufferSource();
+        this.audioSources.fire.buffer = noiseBuffer;
+        this.audioSources.fire.loop = true;
+        this.audioSources.gainFire = this.audioCtx.createGain();
+        this.audioSources.gainFire.gain.value = 0;
+
+        const fireFilter = this.audioCtx.createBiquadFilter();
+        fireFilter.type = 'lowpass';
+        fireFilter.frequency.value = 120; // Deep rumble
+
+        this.audioSources.fire.connect(fireFilter);
+        fireFilter.connect(this.audioSources.gainFire);
+        this.audioSources.gainFire.connect(this.audioCtx.destination);
+        this.audioSources.fire.start();
+    }
+
+    playSound(type, volume = 0.5) {
+        if (!this.audioInited) return;
+        const ctx = this.audioCtx;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        gain.connect(ctx.destination);
+
+        if (type === 'step') {
+            osc.className = 'step';
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(60, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(10, ctx.currentTime + 0.1);
+            gain.gain.setValueAtTime(volume * 0.3, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.1);
+            osc.connect(gain);
+        } else if (type === 'fire') {
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(400, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.2);
+            gain.gain.setValueAtTime(volume * 0.4, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.2);
+            osc.connect(gain);
+        } else if (type === 'damage') {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(100, ctx.currentTime);
+            osc.frequency.linearRampToValueAtTime(40, ctx.currentTime + 0.3);
+            gain.gain.setValueAtTime(volume * 0.8, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.3);
+            osc.connect(gain);
+        } else if (type === 'crackle') {
+            // Short burst of filtered noise
+            const bufSize = ctx.sampleRate * 0.05;
+            const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+
+            const noise = ctx.createBufferSource();
+            noise.buffer = buf;
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'highpass';
+            filter.frequency.value = 2000 + Math.random() * 3000;
+
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(volume * 0.2, ctx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.04);
+
+            noise.connect(filter);
+            filter.connect(g);
+            g.connect(ctx.destination);
+            noise.start();
+        }
+    }
+
+    updateAudio(dt) {
+        if (!this.audioInited) return;
+
+        // ── River Volume ──
+        const riverZ = Math.sin(this.player.position.x / 150) * 120 + 350;
+        const distToRiver = Math.abs(this.player.position.z - riverZ);
+        const riverVol = Math.max(0, 1 - (distToRiver / 100)); // Audible up to 100 units
+        this.audioSources.gainRiver.gain.setTargetAtTime(riverVol * 0.2, this.audioCtx.currentTime, 0.1);
+
+        // ── Fire Volume (Closest campfire) ──
+        let closestFireDist = Infinity;
+        for (const cf of this.campfires) {
+            if (!cf.isLit) continue;
+            const d = this.player.position.distanceTo(cf.mesh.position);
+            if (d < closestFireDist) closestFireDist = d;
+        }
+        const fireVol = Math.max(0, 1 - (closestFireDist / 40));
+        this.audioSources.gainFire.gain.setTargetAtTime(fireVol * 0.4, this.audioCtx.currentTime, 0.1);
+
+        // ── Crackle Logic ──
+        if (fireVol > 0.1 && Math.random() < 0.03) {
+            this.playSound('crackle', fireVol);
+        }
     }
 
     // ─────────────────────────────────────────────
@@ -397,6 +544,7 @@ class RealWorldSim {
             if (e.button === 0 && this.isCharging) {
                 this.isCharging = false;
                 this.fireWeapon();
+                this.playSound('fire', 0.8);
             }
             if (e.button === 2 && !NON_COMBAT.includes(activeType)) {
                 this.setAiming(false);
@@ -426,6 +574,7 @@ class RealWorldSim {
         if (this.hydration <= 10 || this.hunger <= 10) {
             this.health = Math.max(0, this.health - 5);
             this.triggerDamageFlash();
+            this.playSound('damage', 0.6);
             isDraining = true;
         }
 
@@ -438,13 +587,6 @@ class RealWorldSim {
 
         if (this.health <= 0) {
             this.triggerDeath();
-        }
-
-        // ── Auto-save ──
-        this.saveTimer += 1; // Since this runs once per second (survivalTimer check at top)
-        if (this.saveTimer >= this.saveInterval) {
-            this.saveTimer = 0;
-            this.saveData();
         }
     }
 
@@ -561,7 +703,6 @@ class RealWorldSim {
 
             if (!isStackable || count <= 0) return slot;
         }
-        this.saveData();
         return this.activeSlot;
     }
 
@@ -645,7 +786,6 @@ class RealWorldSim {
             twig.collected = true;
 
             this.addToInventory('Rama', '🌳', 1);
-            this.saveData();
             if (this.inventory[this.activeSlot] && this.inventory[this.activeSlot].type === 'Rama') {
                 this.equipWeapon(this.activeSlot);
             }
@@ -1524,6 +1664,58 @@ class RealWorldSim {
     // ─────────────────────────────────────────────
     // PLAYER MESH (simple humanoid)
     // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // PLAYER RENDERING & NAME TAG
+    // ─────────────────────────────────────────────
+    drawNameTagCanvas(canvas, name) {
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Background bubble
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+        const r = 20;
+        ctx.beginPath();
+        ctx.moveTo(r, 0);
+        ctx.lineTo(canvas.width - r, 0);
+        ctx.quadraticCurveTo(canvas.width, 0, canvas.width, r);
+        ctx.lineTo(canvas.width, canvas.height - r);
+        ctx.quadraticCurveTo(canvas.width, canvas.height, canvas.width - r, canvas.height);
+        ctx.lineTo(r, canvas.height);
+        ctx.quadraticCurveTo(0, canvas.height, 0, canvas.height - r);
+        ctx.lineTo(0, r);
+        ctx.quadraticCurveTo(0, 0, r, 0);
+        ctx.closePath();
+        ctx.fill();
+
+        // Text
+        ctx.fillStyle = '#f39c12'; // District Orange
+        ctx.font = 'bold 80px Outfit, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = 4;
+        ctx.shadowOffsetY = 4;
+        ctx.fillText(name.toUpperCase(), canvas.width / 2, canvas.height / 2);
+    }
+
+    createNameTag(name) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 128;
+        this.drawNameTagCanvas(canvas, name);
+
+        const tex = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.SpriteMaterial({
+            map: tex,
+            transparent: true,
+            depthTest: true
+        });
+        const sprite = new THREE.Sprite(mat);
+        sprite.scale.set(1.4, 0.35, 1); // Increased scale for legibility
+        sprite.renderOrder = 100;
+        return sprite;
+    }
+
     createPlayerMesh() {
         const isFemale = this.gender === 'female';
         const g = new THREE.Group();
@@ -1533,7 +1725,12 @@ class RealWorldSim {
         const hairColor = isFemale ? 0x2a1a0a : 0x1a1008;
         const pantColor = 0x4a3c2a;
 
-        const mat = (c, r = 0.8) => new THREE.MeshStandardMaterial({ color: c, roughness: r });
+        const mat = (c, r = 0.8) => new THREE.MeshStandardMaterial({
+            color: c,
+            roughness: r,
+            emissive: c,
+            emissiveIntensity: 0.15
+        });
 
         // All parts in LOCAL space:
         //   y=0.00 → bottom of shoes (feet)
@@ -1582,12 +1779,17 @@ class RealWorldSim {
 
         g.add(torso, head, hair, legL, legR, shoeL, shoeR, armL, armR);
 
+        // ── Name Tag ─────────────────────────────
+        const nameTag = this.createNameTag(this.playerName);
+        nameTag.position.y = 1.25; // Slightly higher above the head
+        g.add(nameTag);
+
         // Local height ≈ 1.0 unit (feet at y=0, head-top at y≈1.0)
         // Scale so world height = player.height = 1.7
         g.scale.set(1.5, 1.7, 1.5);
 
         // Store references for animation
-        this.meshParts = { torso, head, hair, legL, legR, armL, armR, shoeL, shoeR };
+        this.meshParts = { torso, head, hair, legL, legR, armL, armR, shoeL, shoeR, nameTag };
 
         this.playerMesh = g;
         this.playerMesh.visible = false;
@@ -1605,8 +1807,18 @@ class RealWorldSim {
 
         // Advance animation clock (only while moving)
         const freq = isSprinting ? 9 : (isCrouching ? 4 : 6);
-        if (isMoving) this.animTime += dt * freq;
-        else this.animTime *= 0.75; // coast to idle
+        if (isMoving) {
+            this.animTime += dt * freq;
+            // Record footsteps based on animTime cycle
+            this.footstepTime += dt * (isSprinting ? 1.5 : 1.0);
+            if (this.footstepTime > 0.35) {
+                this.playSound('step', isSprinting ? 0.35 : 0.2);
+                this.footstepTime = 0;
+            }
+        } else {
+            this.animTime *= 0.75; // coast to idle
+            this.footstepTime = 0;
+        }
 
         const swing = Math.sin(this.animTime);
         const legSwing = swing * (isSprinting ? 0.55 : (isCrouching ? 0.30 : 0.42));
@@ -2362,6 +2574,7 @@ class RealWorldSim {
         this.updateCharge(dt);
         this.updateDrinkAnim(dt);
         this.checkNearWeapon();
+        this.updateAudio(dt);
 
         // ── 3. Player Movement & Physics ────────────────
         if (this.isClimbing) {

@@ -400,6 +400,11 @@
             gap: 8px;
             z-index: 50;
             pointer-events: none;
+            /* Block base but children can override */
+        }
+
+        #survival-hud>* {
+            pointer-events: auto;
         }
 
         #player-identity-hud {
@@ -407,6 +412,7 @@
             padding-bottom: 4px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             max-width: 170px;
+            cursor: pointer;
         }
 
         #hud-player-name {
@@ -417,6 +423,11 @@
             text-transform: uppercase;
             letter-spacing: 1.5px;
             text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+            transition: color 0.2s;
+        }
+
+        #player-identity-hud:hover #hud-player-name {
+            color: #fff;
         }
 
         #hud-player-district {
@@ -785,7 +796,7 @@
 
     <!-- Survival Bars -->
     <div id="survival-hud">
-        <div id="player-identity-hud">
+        <div id="player-identity-hud" onclick="renameTribute()">
             <span id="hud-player-name">Tribute</span>
             <span id="hud-player-district">District 12</span>
         </div>
@@ -889,7 +900,30 @@
                     selectedChar = data.gender || 'male';
                 } catch (e) { }
             }
+
+            // Save name as typed
+            document.getElementById('player-name-input').addEventListener('input', (e) => {
+                const name = e.target.value.trim();
+                if (name) {
+                    const saved = localStorage.getItem('thearena_save');
+                    const data = saved ? JSON.parse(saved) : {};
+                    data.playerName = name;
+                    localStorage.setItem('thearena_save', JSON.stringify(data));
+                }
+            });
         };
+
+        function renameTribute() {
+            const oldName = document.getElementById('hud-player-name').textContent;
+            const newName = prompt("Enter new name for your tribute:", oldName);
+            if (newName && newName.trim() && newName.trim() !== oldName) {
+                if (window.game) {
+                    window.game.setPlayerName(newName.trim());
+                } else {
+                    document.getElementById('hud-player-name').textContent = newName.trim();
+                }
+            }
+        }
 
         function selectChar(type) {
             selectedChar = type;
