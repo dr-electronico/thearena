@@ -3,7 +3,7 @@
 //           1st/3rd person camera, male/female character model.
 
 class RealWorldSim {
-    constructor(gender = 'male', playerName = 'Katniss', shouldLoad = false) {
+    constructor(gender = 'male', playerName = 'Katniss', shouldLoad = false, customColors = null) {
         this.scene = null;
         this.camera = null;
         this.renderer = null;
@@ -12,6 +12,7 @@ class RealWorldSim {
         this.gender = gender;
         this.playerName = playerName;
         this.shouldLoad = shouldLoad;
+        this.customColors = customColors; // Store customization
         this.keys = {};
         this.mouse = { x: 0, y: 0 };
         this.clock = new THREE.Clock();
@@ -147,7 +148,8 @@ class RealWorldSim {
 
         const data = {
             playerName: this.playerName,
-            gender: this.gender
+            gender: this.gender,
+            colors: this.customColors // Preserve colors
         };
 
         localStorage.setItem('thearena_save', JSON.stringify(data));
@@ -162,6 +164,7 @@ class RealWorldSim {
             const data = JSON.parse(saved);
             this.playerName = data.playerName || this.playerName;
             this.gender = data.gender || this.gender;
+            if (data.colors) this.customColors = data.colors; // Restore colors
 
             this.updateHUD();
             // Sync the name tag if it exists
@@ -1765,10 +1768,19 @@ class RealWorldSim {
         const isFemale = this.gender === 'female';
         const g = new THREE.Group();
 
-        const skinColor = isFemale ? 0xf0c8a0 : 0xe8b882;
-        const clothColor = isFemale ? 0x2d4a1e : 0x3d5a28;
-        const hairColor = isFemale ? 0x2a1a0a : 0x1a1008;
-        const pantColor = 0x4a3c2a;
+        // Defaults if no customization provided
+        let skinColor = isFemale ? 0xf0c8a0 : 0xe8b882;
+        let clothColor = isFemale ? 0x2d4a1e : 0x3d5a28;
+        let hairColor = isFemale ? 0x2a1a0a : 0x1a1008;
+        let pantColor = 0x4a3c2a;
+
+        // Apply customization if exists
+        if (this.customColors) {
+            if (this.customColors.skin) skinColor = new THREE.Color(this.customColors.skin);
+            if (this.customColors.hair) hairColor = new THREE.Color(this.customColors.hair);
+            if (this.customColors.clothes) clothColor = new THREE.Color(this.customColors.clothes);
+            if (this.customColors.pants) pantColor = new THREE.Color(this.customColors.pants);
+        }
 
         const mat = (c, r = 0.8) => new THREE.MeshStandardMaterial({
             color: c,
