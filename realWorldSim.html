@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Hunger Games: The Arena</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:wght@400;600&display=swap"
+        rel="stylesheet">
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body,
+        html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            font-family: 'Inter', system-ui, sans-serif;
+        }
+
+        #gameContainer {
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+
+        /* ── OVERLAY ── */
+        #overlay {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(160deg, #0a0a0a 0%, #1a0a0a 50%, #0a0a0a 100%);
+            color: #fff;
+            z-index: 100;
+            transition: opacity 0.8s, transform 0.8s;
+        }
+
+        #overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+            transform: scale(1.05);
+        }
+
+        .overlay-bg {
+            position: absolute;
+            inset: 0;
+            background: url('https://images.unsplash.com/photo-1448375240586-882707db888b?auto=format&fit=crop&q=60&w=1920') center/cover;
+            opacity: 0.12;
+        }
+
+        .overlay-vignette {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(ellipse at center, transparent 30%, #000 100%);
+        }
+
+        .overlay-content {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0;
+        }
+
+        .logo-subtitle {
+            font-family: 'Cinzel', serif;
+            font-size: 13px;
+            letter-spacing: 8px;
+            color: #c0392b;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+            opacity: 0.9;
+        }
+
+        h1 {
+            font-family: 'Cinzel', serif;
+            font-size: clamp(48px, 8vw, 90px);
+            color: #fff;
+            text-transform: uppercase;
+            letter-spacing: 10px;
+            line-height: 1;
+            filter: drop-shadow(0 0 40px rgba(231, 76, 60, 0.5));
+            margin-bottom: 6px;
+        }
+
+        h1 span {
+            color: #e74c3c;
+        }
+
+        .tagline {
+            font-size: 13px;
+            letter-spacing: 5px;
+            color: rgba(255, 255, 255, 0.4);
+            text-transform: uppercase;
+            margin-bottom: 50px;
+        }
+
+        /* ── STEPS ── */
+        .step {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+        }
+
+        .step.active {
+            display: flex;
+            animation: fadeUp 0.5s ease;
+        }
+
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .step-label {
+            font-size: 11px;
+            letter-spacing: 4px;
+            color: rgba(255, 255, 255, 0.35);
+            text-transform: uppercase;
+            margin-bottom: 28px;
+        }
+
+        /* Character Cards */
+        .char-cards {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 36px;
+        }
+
+        .char-card {
+            width: 160px;
+            cursor: pointer;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.04);
+            padding: 24px 16px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            transition: border-color 0.25s, background 0.25s, transform 0.25s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .char-card::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 50% 0%, rgba(231, 76, 60, 0.15), transparent 70%);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .char-card:hover {
+            transform: translateY(-6px);
+            border-color: rgba(231, 76, 60, 0.5);
+        }
+
+        .char-card:hover::before {
+            opacity: 1;
+        }
+
+        .char-card.selected {
+            border-color: #e74c3c;
+            background: rgba(231, 76, 60, 0.1);
+            transform: translateY(-6px);
+        }
+
+        .char-card.selected::before {
+            opacity: 1;
+        }
+
+        .char-avatar {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 42px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 2px solid rgba(255, 255, 255, 0.12);
+        }
+
+        .char-name {
+            font-family: 'Cinzel', serif;
+            font-size: 16px;
+            letter-spacing: 2px;
+            color: #fff;
+            font-weight: 700;
+        }
+
+        .char-desc {
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.4);
+            text-align: center;
+            line-height: 1.6;
+        }
+
+        .char-check {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #e74c3c;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .char-card.selected .char-check {
+            opacity: 1;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 16px 52px;
+            font-size: 14px;
+            background: #e74c3c;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            text-transform: uppercase;
+            font-weight: 700;
+            letter-spacing: 3px;
+            box-shadow: 0 0 30px rgba(231, 76, 60, 0.35);
+            transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .btn:hover {
+            background: #ff5e4d;
+            transform: translateY(-2px);
+            box-shadow: 0 0 50px rgba(231, 76, 60, 0.55);
+        }
+
+        .btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* ── HUD ── */
+        #hud {
+            position: fixed;
+            top: 18px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.55);
+            color: rgba(255, 255, 255, 0.75);
+            padding: 9px 24px;
+            border-radius: 30px;
+            font-size: 12px;
+            letter-spacing: 1.5px;
+            pointer-events: none;
+            border: 1px solid rgba(231, 76, 60, 0.3);
+            backdrop-filter: blur(8px);
+            display: none;
+            text-transform: uppercase;
+        }
+
+        /* Camera badge */
+        #camBadge {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: rgba(0, 0, 0, 0.6);
+            color: rgba(255, 255, 255, 0.7);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 11px;
+            letter-spacing: 2px;
+            pointer-events: none;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            backdrop-filter: blur(6px);
+            display: none;
+        }
+
+        /* Crosshair */
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            width: 18px;
+            height: 18px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            display: none;
+        }
+
+        #crosshair::before,
+        #crosshair::after {
+            content: "";
+            position: absolute;
+            background: rgba(255, 255, 255, 0.85);
+        }
+
+        #crosshair::before {
+            width: 18px;
+            height: 2px;
+            top: 8px;
+            left: 0;
+        }
+
+        #crosshair::after {
+            width: 2px;
+            height: 18px;
+            left: 8px;
+            top: 0;
+        }
+
+        /* Separator */
+        .sep {
+            width: 60px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(231, 76, 60, 0.6), transparent);
+            margin: 16px 0 32px;
+        }
+
+        /* ── MINIMAP ── */
+        #minimap-wrap {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            overflow: hidden;
+            border: 2px solid rgba(231, 76, 60, 0.7);
+            box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 4px 24px rgba(0, 0, 0, 0.5), inset 0 0 12px rgba(0, 0, 0, 0.4);
+            display: none;
+            z-index: 50;
+            pointer-events: none;
+        }
+
+        #minimap {
+            width: 180px;
+            height: 180px;
+            display: block;
+        }
+
+        #minimap-label {
+            position: fixed;
+            top: 206px;
+            right: 20px;
+            width: 180px;
+            text-align: center;
+            font-size: 10px;
+            letter-spacing: 2px;
+            color: rgba(255, 255, 255, 0.4);
+            text-transform: uppercase;
+            pointer-events: none;
+            display: none;
+            z-index: 50;
+        }
+
+        #minimap-north {
+            position: fixed;
+            top: 11px;
+            right: 101px;
+            font-size: 10px;
+            color: rgba(231, 76, 60, 0.9);
+            font-weight: bold;
+            letter-spacing: 1px;
+            pointer-events: none;
+            display: none;
+            z-index: 51;
+        }
+
+        /* ── SURVIVAL BARS ── */
+        #survival-hud {
+            position: fixed;
+            bottom: 90px;
+            left: 20px;
+            display: none;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 50;
+            pointer-events: none;
+        }
+
+        .stat-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stat-icon {
+            font-size: 15px;
+            width: 20px;
+            text-align: center;
+            filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8));
+        }
+
+        .stat-bar-bg {
+            width: 140px;
+            height: 8px;
+            background: rgba(0, 0, 0, 0.45);
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .stat-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+
+        #bar-health {
+            background: linear-gradient(90deg, #c0392b, #e74c3c);
+        }
+
+        #bar-hydration {
+            background: linear-gradient(90deg, #1a78c2, #3498db);
+        }
+
+        #bar-hunger {
+            background: linear-gradient(90deg, #c97c00, #f39c12);
+        }
+
+        .stat-val {
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.55);
+            font-family: 'Courier New', monospace;
+            min-width: 28px;
+        }
+
+        /* ── INVENTORY ── */
+        #inventory-hud {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            gap: 8px;
+            z-index: 50;
+            pointer-events: none;
+        }
+
+        .inv-slot {
+            width: 58px;
+            height: 58px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1.5px solid rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            backdrop-filter: blur(4px);
+            transition: border-color 0.2s;
+            position: relative;
+        }
+
+        .inv-slot.active {
+            border-color: rgba(231, 76, 60, 0.8);
+            box-shadow: 0 0 10px rgba(231, 76, 60, 0.3);
+        }
+
+        .inv-slot-icon {
+            font-size: 22px;
+            line-height: 1;
+        }
+
+        .inv-slot-name {
+            font-size: 8px;
+            color: rgba(255, 255, 255, 0.45);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            text-align: center;
+            padding: 0 3px;
+        }
+
+        .inv-slot-num {
+            position: absolute;
+            top: 3px;
+            left: 5px;
+            font-size: 9px;
+            color: rgba(255, 255, 255, 0.3);
+        }
+
+        #pickup-hint {
+            position: fixed;
+            bottom: 88px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.7);
+            background: rgba(0, 0, 0, 0.5);
+            padding: 4px 12px;
+            border-radius: 20px;
+            display: none;
+            z-index: 50;
+            pointer-events: none;
+            letter-spacing: 1px;
+        }
+
+        /* ── AIM OVERLAY ── */
+        #aim-overlay {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 40;
+            opacity: 0;
+            transition: opacity 0.12s ease;
+        }
+
+        #aim-overlay.active {
+            opacity: 1;
+        }
+
+        #aim-overlay::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(ellipse 38% 50% at center, transparent 55%, rgba(0, 0, 0, 0.82) 100%);
+        }
+
+        /* Thin crosshair lines for aim */
+        #aim-overlay::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(to right, transparent calc(50% - 20px), rgba(255, 255, 255, 0.55) calc(50% - 20px), rgba(255, 255, 255, 0.55) calc(50% - 18px), transparent calc(50% - 18px)),
+                linear-gradient(to right, transparent calc(50% + 18px), rgba(255, 255, 255, 0.55) calc(50% + 18px), rgba(255, 255, 255, 0.55) calc(50% + 20px), transparent calc(50% + 20px)),
+                linear-gradient(to bottom, transparent calc(50% - 20px), rgba(255, 255, 255, 0.55) calc(50% - 20px), rgba(255, 255, 255, 0.55) calc(50% - 18px), transparent calc(50% - 18px)),
+                linear-gradient(to bottom, transparent calc(50% + 18px), rgba(255, 255, 255, 0.55) calc(50% + 18px), rgba(255, 255, 255, 0.55) calc(50% + 20px), transparent calc(50% + 20px));
+        }
+
+        /* ── CHARGE BAR ── */
+        #charge-wrap {
+            position: fixed;
+            bottom: 102px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 200px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            z-index: 55;
+            pointer-events: none;
+        }
+
+        #charge-label {
+            font-size: 9px;
+            letter-spacing: 3px;
+            color: rgba(255, 255, 255, 0.5);
+            text-transform: uppercase;
+        }
+
+        #charge-bar-bg {
+            width: 100%;
+            height: 6px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 3px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+        }
+
+        #charge-bar-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 3px;
+            background: linear-gradient(90deg, #28c840, #55d020);
+            transition: background 0.1s;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="overlay">
+        <div class="overlay-bg"></div>
+        <div class="overlay-vignette"></div>
+
+        <div class="overlay-content">
+            <div class="logo-subtitle">Districts United</div>
+            <h1>THE <span>ARENA</span></h1>
+            <div class="tagline">May the odds be ever in your favor</div>
+            <div class="sep"></div>
+
+            <!-- Step 1: Character Select -->
+            <div class="step active" id="step1">
+                <div class="step-label">Step 1 — Choose your tribute</div>
+                <div class="char-cards">
+                    <div class="char-card" id="card-male" onclick="selectChar('male')">
+                        <div class="char-avatar">🧑</div>
+                        <div class="char-name">Male</div>
+                        <div class="char-desc">Strong &amp; agile.<br>Trained from District 2.</div>
+                        <div class="char-check">✓</div>
+                    </div>
+                    <div class="char-card" id="card-female" onclick="selectChar('female')">
+                        <div class="char-avatar">👩</div>
+                        <div class="char-name">Female</div>
+                        <div class="char-desc">Swift &amp; precise.<br>Skilled archer from District 12.</div>
+                        <div class="char-check">✓</div>
+                    </div>
+                </div>
+                <button class="btn" id="nextBtn" disabled onclick="startGame()">Enter the Arena</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="hud">WASD: MOVE &nbsp;•&nbsp; MOUSE: LOOK &nbsp;•&nbsp; SPACE: JUMP &nbsp;•&nbsp; SHIFT: DIVE &nbsp;•&nbsp;
+        P: CAMERA &nbsp;•&nbsp; E: PICK UP &nbsp;•&nbsp; <span style="color:#f39c12">LMB (hold): CHARGE &nbsp;•&nbsp;
+            LMB (release): FIRE &nbsp;•&nbsp; RMB: AIM</span></div>
+    <div id="camBadge" id="camBadge">📷 FIRST PERSON</div>
+    <div id="gameContainer"></div>
+    <div id="crosshair"></div>
+
+    <!-- Minimap -->
+    <div id="minimap-wrap"><canvas id="minimap" width="180" height="180"></canvas></div>
+    <div id="minimap-label">MAP</div>
+    <div id="minimap-north">N</div>
+
+    <!-- Survival Bars -->
+    <div id="survival-hud">
+        <div class="stat-row">
+            <div class="stat-icon">❤️</div>
+            <div class="stat-bar-bg">
+                <div class="stat-bar-fill" id="bar-health" style="width:100%"></div>
+            </div>
+            <div class="stat-val" id="val-health">100</div>
+        </div>
+        <div class="stat-row">
+            <div class="stat-icon">💧</div>
+            <div class="stat-bar-bg">
+                <div class="stat-bar-fill" id="bar-hydration" style="width:100%"></div>
+            </div>
+            <div class="stat-val" id="val-hydration">100</div>
+        </div>
+        <div class="stat-row">
+            <div class="stat-icon">🍗</div>
+            <div class="stat-bar-bg">
+                <div class="stat-bar-fill" id="bar-hunger" style="width:100%"></div>
+            </div>
+            <div class="stat-val" id="val-hunger">100</div>
+        </div>
+    </div>
+
+    <!-- Inventory -->
+    <div id="inventory-hud">
+        <div class="inv-slot active" id="inv-0">
+            <div class="inv-slot-num">1</div>
+            <div class="inv-slot-icon">⬜</div>
+            <div class="inv-slot-name">Empty</div>
+        </div>
+        <div class="inv-slot" id="inv-1">
+            <div class="inv-slot-num">2</div>
+            <div class="inv-slot-icon">⬜</div>
+            <div class="inv-slot-name">Empty</div>
+        </div>
+        <div class="inv-slot" id="inv-2">
+            <div class="inv-slot-num">3</div>
+            <div class="inv-slot-icon">⬜</div>
+            <div class="inv-slot-name">Empty</div>
+        </div>
+        <div class="inv-slot" id="inv-3">
+            <div class="inv-slot-num">4</div>
+            <div class="inv-slot-icon">⬜</div>
+            <div class="inv-slot-name">Empty</div>
+        </div>
+        <div class="inv-slot" id="inv-4">
+            <div class="inv-slot-num">5</div>
+            <div class="inv-slot-icon">⬜</div>
+            <div class="inv-slot-name">Empty</div>
+        </div>
+    </div>
+    <div id="pickup-hint">Press E to pick up</div>
+
+    <!-- Aim overlay (RMB zoom) -->
+    <div id="aim-overlay"></div>
+
+    <!-- Charge bar (LMB hold) -->
+    <div id="charge-wrap">
+        <div id="charge-label">Power</div>
+        <div id="charge-bar-bg">
+            <div id="charge-bar-fill"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script src="./realWorldSim.js"></script>
+    <script>
+        let selectedChar = null;
+
+        function selectChar(type) {
+            selectedChar = type;
+            document.querySelectorAll('.char-card').forEach(c => c.classList.remove('selected'));
+            document.getElementById('card-' + type).classList.add('selected');
+            document.getElementById('nextBtn').disabled = false;
+        }
+
+        function startGame() {
+            if (!selectedChar) return;
+            const overlay = document.getElementById('overlay');
+            overlay.classList.add('hidden');
+            setTimeout(() => overlay.style.display = 'none', 800);
+            document.getElementById('hud').style.display = 'block';
+            document.getElementById('camBadge').style.display = 'block';
+            document.getElementById('crosshair').style.display = 'block';
+            document.getElementById('minimap-wrap').style.display = 'block';
+            document.getElementById('minimap-label').style.display = 'block';
+            document.getElementById('minimap-north').style.display = 'block';
+            document.getElementById('survival-hud').style.display = 'flex';
+            document.getElementById('inventory-hud').style.display = 'flex';
+
+            // Pass gender to game
+            window.game = new RealWorldSim(selectedChar);
+        }
+    </script>
+</body>
+
+</html>
