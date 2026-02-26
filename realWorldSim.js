@@ -54,11 +54,23 @@ class RealWorldSim {
         this.hunger = 100;
         this.survivalTimer = 0;
 
-        // Inventory (5 slots)
-        this.inventory = [null, null, null, null, null];
+        // Inventory (7 slots)
+        this.inventory = [null, null, null, null, null, null, null];
         this.activeSlot = 0;
         this.heldWeaponMesh = null;
         this.weaponItems = [];
+        this.bottleWater = 0;   // 0-100 — current water level in the canteen
+
+        // ── Drink animation ──────────────────────────
+        // phase: 'idle' | 'raising' | 'drinking' | 'lowering'
+        this.drinkAnim = {
+            phase: 'idle',
+            t: 0,               // 0→1 progress within current phase
+            // saved resting transform of the held weapon
+            restPos: null,      // THREE.Vector3
+            restRot: null,      // THREE.Euler
+            restScale: null,    // number
+        };
 
         // Cornucopia solid walls (AABB boxes)
         this.solidBoxes = [];
@@ -67,7 +79,7 @@ class RealWorldSim {
         this.isCharging = false;    // LMB held
         this.chargeStart = 0;
         this.chargeAmount = 0;        // 0‥1
-        this.maxChargeTime = 1.8;      // seconds to 100%
+        this.maxChargeTime = 0.7;      // seconds to 100% (FASTER)
         this.projectiles = [];       // flying arrows / spears
         this.weaponRecoil = 0;        // transient kick value
 
@@ -76,6 +88,24 @@ class RealWorldSim {
         this.normalFOV = 75;
         this.aimFOV = 32;
         this.currentFOV = 75;
+
+        // ── Animals & World Pop ─────────────────────
+        this.animals = [];      // { mesh, type, state, t, targetVel, targetRot }
+        this.environmentMeshData = {
+            bushes: [],         // InstancedMesh data
+            twigs: []           // Metadata for picking up
+        };
+        this.twigInst = null;   // Reference to the mesh for updates
+
+        this.campfires = [];    // { mesh, sticks: 0, isLit: false }
+        this.isClimbing = false;
+        this.climbingTreePos = null;
+
+        // Day/Night Cycle
+        this.dayCycleTime = 0;
+        this.totalCycleDuration = 600; // 10 minutes total (5 min day / 5 min night)
+        this.ambientLight = null;
+        this.hemiLight = null;
 
         this.init();
     }
@@ -87,6 +117,7 @@ class RealWorldSim {
         this.createWorld();
         this.createPlayerMesh();
         this.setupMinimap();
+        this.setupStartingInventory();
         this.loop();
     }
 
@@ -111,17 +142,20 @@ class RealWorldSim {
         container.appendChild(this.renderer.domElement);
 
         // Lighting
-        this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-        this.scene.add(new THREE.HemisphereLight(0x87ceeb, 0x3d4d1f, 0.6));
+        this.ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        this.scene.add(this.ambientLight);
+
+        this.hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x3d4d1f, 0.6);
+        this.scene.add(this.hemiLight);
 
         this.sun = new THREE.DirectionalLight(0xffffff, 1.5);
         this.sun.position.set(100, 200, 100);
         this.sun.castShadow = true;
-        this.sun.shadow.camera.left = -200;
-        this.sun.shadow.camera.right = 200;
-        this.sun.shadow.camera.top = 200;
-        this.sun.shadow.camera.bottom = -200;
-        this.sun.shadow.camera.far = 1000;
+        this.sun.shadow.camera.left = -300;
+        this.sun.shadow.camera.right = 300;
+        this.sun.shadow.camera.top = 300;
+        this.sun.shadow.camera.bottom = -300;
+        this.sun.shadow.camera.far = 1200;
         this.sun.shadow.mapSize.set(1024, 1024);
         this.scene.add(this.sun);
 
@@ -166,15 +200,21 @@ class RealWorldSim {
             if (key === 'w') this.isSprinting = false;
         });
         document.addEventListener('keydown', (e) => {
-            // Slot select 1-5
-            if (['1', '2', '3', '4', '5'].includes(e.key)) {
+            // Slot select 1-7
+            if (['1', '2', '3', '4', '5', '6', '7'].includes(e.key)) {
                 const idx = parseInt(e.key) - 1;
                 this.activeSlot = idx;
                 document.querySelectorAll('.inv-slot').forEach((s, i) => s.classList.toggle('active', i === idx));
                 this.equipWeapon(idx);
             }
-            // Pickup nearest weapon crate
-            if (e.key.toLowerCase() === 'e') this.tryPickup();
+            // Pickup or Climb
+            if (e.key.toLowerCase() === 'e') {
+                if (this.tryClimb()) return;
+                this.tryPickup();
+                this.tryPickupTwig();
+            }
+            // Drop active weapon
+            if (e.key.toLowerCase() === 'q') this.dropWeapon();
         }, { capture: false });
         document.addEventListener('mousemove', (e) => {
             if (!this.simulationRunning) return;
@@ -191,24 +231,72 @@ class RealWorldSim {
             this.equipWeapon(this.activeSlot);
         }, { passive: true });
 
+        // ── Non-combat item types ──────────────────────────────────────
+        const NON_COMBAT = ['Bottle', 'Lighter'];
+
         // ── Combat: LMB = charge, release = fire ─────
         this.renderer.domElement.addEventListener('mousedown', (e) => {
-            if (e.button === 0) { // left — start charging
-                if (this.inventory[this.activeSlot]) {
+            const activeItem = this.inventory[this.activeSlot];
+            const activeType = activeItem ? activeItem.type : null;
+
+            if (e.button === 0) { // left — start charging (weapons only)
+                if (activeType === 'Bottle') {
+                    this.startDrinking();       // canteen: drink animation
+                } else if (activeType === 'Muslo' || activeType === 'Costilla') {
+                    this.useFood();             // eat food
+                } else if (activeItem && !NON_COMBAT.includes(activeType)) {
                     this.isCharging = true;
                     this.chargeStart = performance.now();
                 }
             }
-            if (e.button === 2) { // right — aim
-                this.setAiming(true);
+            if (e.button === 2) { // right
+                if (activeType === 'Bottle') {
+                    // Extinguish fire if bottle is full
+                    const cf = this.findNearbyCampfire(this.player.position.x, this.player.position.z, 3.0);
+                    if (cf && cf.isLit && this.bottleWater >= 100) {
+                        this.bottleWater = 0;
+                        this.updateBottleHUD();
+                        cf.isLit = false;
+                        if (cf.fireGroup) {
+                            cf.mesh.remove(cf.fireGroup);
+                            cf.fireGroup = null;
+                        }
+
+                        // Leave ASHES
+                        if (!cf.ashMesh) {
+                            const ashGeo = new THREE.CircleGeometry(0.5, 12);
+                            const ashMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 1.0 });
+                            const ash = new THREE.Mesh(ashGeo, ashMat);
+                            ash.rotation.x = -Math.PI / 2;
+                            ash.position.y = 0.01;
+                            cf.mesh.add(ash);
+                            cf.ashMesh = ash;
+                        }
+
+                        this.showItemMsg('🔥 Fogata apagada');
+                    } else {
+                        this.useBottle();          // fill or drink
+                    }
+                } else if (activeType === 'Rama') {
+                    this.useRama();            // place stick
+                } else if (activeType === 'Lighter') {
+                    this.useLighter();         // light fire
+                } else if (activeType === 'Muslo' || activeType === 'Costilla') {
+                    this.tryCookFood();        // cook meat near fire
+                } else {
+                    this.setAiming(true);      // weapons: zoom in
+                }
             }
         });
         this.renderer.domElement.addEventListener('mouseup', (e) => {
+            const activeItem = this.inventory[this.activeSlot];
+            const activeType = activeItem ? activeItem.type : null;
+
             if (e.button === 0 && this.isCharging) {
                 this.isCharging = false;
                 this.fireWeapon();
             }
-            if (e.button === 2) {
+            if (e.button === 2 && !NON_COMBAT.includes(activeType)) {
                 this.setAiming(false);
             }
         });
@@ -231,13 +319,17 @@ class RealWorldSim {
         this.hydration = Math.max(0, this.hydration - 0.4);
         this.hunger = Math.max(0, this.hunger - 0.25);
 
-        // Health decays if hydration or hunger low
-        if (this.hydration < 20 || this.hunger < 20) {
-            this.health = Math.max(0, this.health - 0.5);
+        // ── Damage: if Hydration OR Hunger ≤ 10 → Drain Health ────────
+        let isDraining = false;
+        if (this.hydration <= 10 || this.hunger <= 10) {
+            this.health = Math.max(0, this.health - 5);
+            this.triggerDamageFlash();
+            isDraining = true;
         }
-        // Regen if both good
-        if (this.hydration > 60 && this.hunger > 60) {
-            this.health = Math.min(100, this.health + 0.1);
+
+        // ── Health regen: if Hydration OR Hunger ≥ 50 (and not draining) ─
+        if (!isDraining && (this.hydration >= 50 || this.hunger >= 50)) {
+            this.health = Math.min(100, this.health + 2);
         }
 
         // Update DOM
@@ -250,6 +342,43 @@ class RealWorldSim {
         setBar('bar-health', this.health, 'val-health');
         setBar('bar-hydration', this.hydration, 'val-hydration');
         setBar('bar-hunger', this.hunger, 'val-hunger');
+
+        if (this.health <= 0) {
+            this.triggerDeath();
+        }
+    }
+
+    triggerDeath() {
+        if (this._isDead) return;
+        this._isDead = true;
+        this.simulationRunning = false;
+
+        const screen = document.getElementById('death-screen');
+        if (screen) {
+            screen.style.display = 'flex';
+            // Force reflow
+            void screen.offsetWidth;
+            screen.classList.add('active');
+        }
+
+        // Unlock cursor
+        document.exitPointerLock();
+    }
+
+    // ─────────────────────────────────────────────
+    // DAMAGE FLASH
+    // ─────────────────────────────────────────────
+    triggerDamageFlash() {
+        const el = document.getElementById('damage-flash');
+        if (!el) return;
+        // Remove + re-add active class to retrigger if already flashing
+        el.classList.remove('active');
+        // Force reflow so the transition resets
+        void el.offsetWidth;
+        el.classList.add('active');
+        // After a short delay, remove active → CSS transition fades it out
+        clearTimeout(this._flashTimer);
+        this._flashTimer = setTimeout(() => el.classList.remove('active'), 80);
     }
 
     // ─────────────────────────────────────────────
@@ -257,34 +386,107 @@ class RealWorldSim {
     // ─────────────────────────────────────────────
     tryPickup() {
         const REACH = 4.0;
-        let best = null, bestDist = REACH * REACH;
+        let best = null, bestDistSq = REACH * REACH;
         for (const item of this.weaponItems) {
             const dx = this.player.position.x - item.x;
             const dz = this.player.position.z - item.z;
             const d2 = dx * dx + dz * dz;
-            if (d2 < bestDist) { bestDist = d2; best = item; }
+            if (d2 < bestDistSq) { bestDistSq = d2; best = item; }
         }
         if (!best) return;
 
-        const addToInventory = (type, icon) => {
-            let slot = this.inventory.indexOf(null);
-            if (slot === -1) slot = this.activeSlot;
-            this.inventory[slot] = { type, icon };
-            const slotEl = document.getElementById('inv-' + slot);
-            if (slotEl) {
-                slotEl.querySelector('.inv-slot-icon').textContent = icon;
-                slotEl.querySelector('.inv-slot-name').textContent = type;
-            }
-            return slot;
-        };
-
-        const pickedSlot = addToInventory(best.type, best.icon);
+        const pickedSlot = this.addToInventory(best.type, best.icon);
         // No separate slot for arrows — Bow includes arrows
 
         this.scene.remove(best.mesh);
         this.weaponItems.splice(this.weaponItems.indexOf(best), 1);
 
         if (pickedSlot === this.activeSlot) this.equipWeapon(this.activeSlot);
+    }
+
+    spawnLoot(type, icon, x, z, count = 1) {
+        for (let i = 0; i < count; i++) {
+            // Jitter position so they don't overlap perfectly
+            const ox = (Math.random() - 0.5) * 1.5;
+            const oz = (Math.random() - 0.5) * 1.5;
+            const lx = x + ox, lz = z + oz;
+
+            // Use the crate/box visual for now, or a simple colored box
+            const mat = new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 1 });
+            const geo = new THREE.BoxGeometry(0.4, 0.4, 0.4);
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(lx, 0.2, lz);
+            mesh.rotation.y = Math.random() * Math.PI;
+            this.scene.add(mesh);
+
+            this.weaponItems.push({ type, icon, x: lx, z: lz, mesh });
+        }
+    }
+
+    addToInventory(type, icon, count = 1, extraData = {}) {
+        const STACK_LIMIT = 10;
+        const isStackable = ['Rama', 'Muslo', 'Costilla'].includes(type);
+
+        // 1. Try to find existing stack if stackable
+        if (isStackable) {
+            for (let i = 0; i < this.inventory.length; i++) {
+                let item = this.inventory[i];
+                // Check type and extra data consistency (like isCooked)
+                const sameType = item && item.type === type;
+                let sameState = true;
+                if (extraData.isCooked !== undefined && item && item.isCooked !== extraData.isCooked) sameState = false;
+
+                if (sameType && sameState && item.count < STACK_LIMIT) {
+                    const toAdd = Math.min(count, STACK_LIMIT - item.count);
+                    item.count += toAdd;
+                    count -= toAdd;
+                    this.refreshInventorySlot(i);
+                    if (count <= 0) return i;
+                }
+            }
+        }
+
+        // 2. Find empty slot for remainders or non-stackables
+        while (count > 0) {
+            let slot = this.inventory.indexOf(null);
+            if (slot === -1) {
+                // If inventory is full, overwrite the current active slot (existing behavior)
+                slot = this.activeSlot;
+            }
+
+            const toAdd = isStackable ? Math.min(count, STACK_LIMIT) : 1;
+            this.inventory[slot] = { type, icon, count: toAdd, ...extraData };
+            count -= isStackable ? toAdd : 1;
+            this.refreshInventorySlot(slot);
+
+            if (!isStackable || count <= 0) return slot;
+        }
+        return this.activeSlot;
+    }
+
+    refreshInventorySlot(slotIdx) {
+        const item = this.inventory[slotIdx];
+        const slotEl = document.getElementById('inv-' + slotIdx);
+        if (!slotEl) return;
+
+        const iconEl = slotEl.querySelector('.inv-slot-icon');
+        const nameEl = slotEl.querySelector('.inv-slot-name');
+
+        if (!item) {
+            iconEl.textContent = '⬜';
+            nameEl.textContent = 'Empty';
+        } else {
+            iconEl.textContent = item.icon;
+
+            if (item.type === 'Bottle') {
+                const pct = Math.round(this.bottleWater);
+                iconEl.textContent = this.bottleWater <= 0 ? '🫙' : '🧴';
+                nameEl.textContent = `Cantimplora ${pct}%`;
+            } else {
+                const countStr = (item.count && item.count > 1) ? ` x${item.count}` : "";
+                nameEl.textContent = item.type + countStr;
+            }
+        }
     }
 
     checkNearWeapon() {
@@ -299,6 +501,607 @@ class RealWorldSim {
             }
         }
         if (hint) hint.style.display = 'none';
+
+        // Also check for twigs
+        const twigHint = this.getNearestTwig();
+        if (twigHint && twigHint.distSq < 4.0 * 4.0) {
+            if (hint) {
+                hint.style.display = 'block';
+                hint.textContent = `[E] Recoger rama`;
+            }
+            return;
+        }
+
+        // ── Climbing Check ────────────────────────
+        const nearby = this.getNearbyObjects(this.player.position.x, this.player.position.z);
+        for (const obj of nearby) {
+            if (obj.type === 'tree') {
+                const dx = this.player.position.x - obj.x;
+                const dz = this.player.position.z - obj.z;
+                if (dx * dx + dz * dz < 1.6 * 1.6) {
+                    if (hint) {
+                        hint.style.display = 'block';
+                        hint.textContent = this.isClimbing ? '[E] Bajar del árbol' : '[E] Escalar árbol';
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    tryPickupTwig() {
+        const result = this.getNearestTwig();
+        if (result && result.distSq < 4.0 * 4.0) {
+            const { twig, index } = result;
+            // "Remove" by scaling to zero
+            const dummy = new THREE.Object3D();
+            dummy.scale.set(0, 0, 0);
+            dummy.updateMatrix();
+            this.twigInst.setMatrixAt(twig.originalIndex, dummy.matrix);
+            this.twigInst.instanceMatrix.needsUpdate = true;
+
+            // Mark as collected in metadata
+            twig.collected = true;
+
+            this.addToInventory('Rama', '🌳', 1);
+            if (this.inventory[this.activeSlot] && this.inventory[this.activeSlot].type === 'Rama') {
+                this.equipWeapon(this.activeSlot);
+            }
+        }
+    }
+
+    tryClimb() {
+        if (this.isClimbing) {
+            this.exitClimb();
+            return true;
+        }
+
+        const nearby = this.getNearbyObjects(this.player.position.x, this.player.position.z);
+        for (const obj of nearby) {
+            if (obj.type === 'tree') {
+                const dx = this.player.position.x - obj.x;
+                const dz = this.player.position.z - obj.z;
+                if (dx * dx + dz * dz < 2.0 * 2.0) {
+                    this.isClimbing = true;
+                    this.climbingTreePos = { x: obj.x, z: obj.z, r: obj.r, h: obj.h, isPine: obj.isPine };
+
+                    // Static attachment: Snap player to tree trunk surface
+                    const angle = Math.atan2(dz, dx);
+                    const snapDist = 0.85;
+                    this.player.position.x = obj.x + Math.cos(angle) * snapDist;
+                    this.player.position.z = obj.z + Math.sin(angle) * snapDist;
+                    this.player.position.y += 0.8;
+
+                    this.player.isOnGround = false;
+                    this.player.verticalVelocity = 0;
+                    this.showItemMsg('🪜 Trepando árbol (W/S para subir/bajar)');
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    exitClimb() {
+        if (!this.isClimbing) return;
+
+        // Push the player away from the trunk so they don't get stuck in collision
+        if (this.climbingTreePos) {
+            const dx = this.player.position.x - this.climbingTreePos.x;
+            const dz = this.player.position.z - this.climbingTreePos.z;
+            const angle = Math.atan2(dz, dx);
+            const pR = 0.4;
+            const pushDist = (this.climbingTreePos.r || 0.8) + pR + 0.35; // increased push for safety
+            this.player.position.x = this.climbingTreePos.x + Math.cos(angle) * pushDist;
+            this.player.position.z = this.climbingTreePos.z + Math.sin(angle) * pushDist;
+        }
+
+        this.isClimbing = false;
+        this.climbingTreePos = null;
+        this.showItemMsg('🪜 Bajaste del árbol');
+    }
+
+    getNearestTwig() {
+        if (!this.twigInst || this.environmentMeshData.twigs.length === 0) return null;
+        let best = null, bestDistSq = Infinity;
+        for (let i = 0; i < this.environmentMeshData.twigs.length; i++) {
+            const t = this.environmentMeshData.twigs[i];
+            if (t.collected) continue;
+            const dx = this.player.position.x - t.x;
+            const dz = this.player.position.z - t.z;
+            const d2 = dx * dx + dz * dz;
+            if (d2 < bestDistSq) {
+                bestDistSq = d2;
+                best = { twig: t, index: i, distSq: d2 };
+            }
+        }
+        return best;
+    }
+
+    // ─────────────────────────────────────────────
+    // DROP WEAPON
+    // ─────────────────────────────────────────────
+    dropWeapon() {
+        const item = this.inventory[this.activeSlot];
+        if (!item) return; // nothing in hand
+
+        // ── 1. Clear the inventory slot ──────────────
+        this.inventory[this.activeSlot] = null;
+        this.refreshInventorySlot(this.activeSlot);
+
+        // ── 2. Detach held weapon mesh ───────────────
+        if (this.heldWeaponMesh) {
+            if (this.heldWeaponMesh.parent) this.heldWeaponMesh.parent.remove(this.heldWeaponMesh);
+            this.heldWeaponMesh = null;
+        }
+
+        // ── 3. Compute drop position ─────────────────
+        // Drop 1.5 units in front of the player (camera facing direction), at ground level
+        const dropDist = 1.5;
+        const px = this.player.position.x - Math.sin(this.player.rotationY) * dropDist;
+        const pz = this.player.position.z - Math.cos(this.player.rotationY) * dropDist;
+
+        // ── 4. Build a crate mesh (same style as Cornucopia crates) ──
+        const crateMat = new THREE.MeshStandardMaterial({ color: 0x7a5c2e, roughness: 0.9 });
+        const crateEdge = new THREE.MeshStandardMaterial({ color: 0x4a3010, roughness: 0.95 });
+        const crateIron = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.6, roughness: 0.4 });
+
+        const wg = new THREE.Group();
+
+        // Main box
+        const box = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.75, 0.75), crateMat);
+        box.position.y = 0.375; wg.add(box);
+
+        // Horizontal plank lines front/back
+        for (let i = 0; i < 2; i++) {
+            const plank = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.05, 0.02), crateEdge);
+            plank.position.set(0, 0.22 + i * 0.3, 0.375); wg.add(plank);
+            const pb = plank.clone(); pb.position.z = -0.375; wg.add(pb);
+        }
+
+        // Vertical corner strips
+        for (const xs of [-0.48, 0.48]) {
+            const vert = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.77, 0.77), crateEdge);
+            vert.position.set(xs, 0.375, 0); wg.add(vert);
+        }
+
+        // Iron corner brackets
+        for (const xs of [-0.45, 0.45]) for (const zs of [-0.33, 0.33]) {
+            const brkt = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.04, 0.04), crateIron);
+            brkt.position.set(xs, 0.72, zs); wg.add(brkt);
+        }
+
+        // Lid
+        const lid = new THREE.Mesh(new THREE.BoxGeometry(1.04, 0.08, 0.79), crateEdge);
+        lid.position.y = 0.79; wg.add(lid);
+
+        // Place the crate at ground level, slightly rotated to feel natural
+        wg.position.set(px, 0, pz);
+        wg.rotation.y = this.player.rotationY + (Math.random() - 0.5) * 0.6;
+        wg.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
+        this.scene.add(wg);
+
+        // ── 5. Register as a pickupable item ─────────
+        this.weaponItems.push({ mesh: wg, x: px, z: pz, type: item.type, icon: item.icon });
+    }
+
+    // ─────────────────────────────────────────────
+    // DRINK ANIMATION
+    // ─────────────────────────────────────────────
+    startDrinking() {
+        // Only if bottle is active, has water, and not already animating
+        const item = this.inventory[this.activeSlot];
+        if (!item || item.type !== 'Bottle') return;
+        if (this.drinkAnim.phase !== 'idle') return;
+        if (this.bottleWater <= 0) {
+            this.showItemMsg('🧴 La cantimplora está vacía — buscá un río (clic derecho)');
+            return;
+        }
+        if (!this.heldWeaponMesh) return;
+
+        // Save resting transform so we can smoothly return
+        this.drinkAnim.restPos = this.heldWeaponMesh.position.clone();
+        this.drinkAnim.restRot = this.heldWeaponMesh.rotation.clone();
+        this.drinkAnim.restScale = this.heldWeaponMesh.scale.x;
+        this.drinkAnim.t = 0;
+        this.drinkAnim.phase = 'raising';
+    }
+
+    updateDrinkAnim(dt) {
+        const da = this.drinkAnim;
+        if (da.phase === 'idle') return;
+        const wm = this.heldWeaponMesh;
+        if (!wm) { da.phase = 'idle'; return; }
+
+        // Speed constants (seconds per phase)
+        const RAISE_DUR = 0.55;  // time to bring bottle to mouth
+        const HOLD_DUR = 0.30;  // time held at mouth (drinking)
+        const LOWER_DUR = 0.45;  // time to return
+
+        // Target transform (bottle raised to mouth)
+        // In first-person: move up + toward center, tilt backward
+        const isFirst = this.cameraMode === 'first';
+
+        if (da.phase === 'raising') {
+            da.t = Math.min(1, da.t + dt / RAISE_DUR);
+            const ease = da.t * da.t * (3 - 2 * da.t); // smoothstep
+
+            if (isFirst) {
+                // Raise toward mouth: move up+left, tilt can toward face
+                wm.position.set(
+                    da.restPos.x + ease * (-0.04),
+                    da.restPos.y + ease * 0.18,
+                    da.restPos.z + ease * 0.10
+                );
+                wm.rotation.set(
+                    da.restRot.x + ease * (-1.1),  // tilt can mouth toward face
+                    da.restRot.y + ease * 0.15,
+                    da.restRot.z + ease * 0.2
+                );
+            } else {
+                // Third-person: arm raises up
+                wm.position.set(
+                    da.restPos.x,
+                    da.restPos.y + ease * 0.25,
+                    da.restPos.z
+                );
+                wm.rotation.set(
+                    da.restRot.x + ease * (-1.0),
+                    da.restRot.y,
+                    da.restRot.z
+                );
+            }
+
+            if (da.t >= 1) {
+                da.t = 0;
+                da.phase = 'drinking';
+            }
+
+        } else if (da.phase === 'drinking') {
+            da.t = Math.min(1, da.t + dt / HOLD_DUR);
+
+            // Subtle tip wobble (drinking glug)
+            const wobble = Math.sin(da.t * Math.PI * 4) * 0.06;
+            if (isFirst) {
+                wm.rotation.x = da.restRot.x - 1.1 + wobble;
+            } else {
+                wm.rotation.x = da.restRot.x - 1.0 + wobble;
+            }
+
+            if (da.t >= 1) {
+                // ── Apply effect ──────────────────────────
+                const sip = Math.min(30, this.bottleWater);
+                this.bottleWater = Math.max(0, this.bottleWater - 30);
+                this.hydration = Math.min(100, this.hydration + sip);
+                this.updateBottleHUD();
+
+                // Immediately refresh HUD bars
+                const barEl = document.getElementById('bar-hydration');
+                const valEl = document.getElementById('val-hydration');
+                if (barEl) barEl.style.width = this.hydration + '%';
+                if (valEl) valEl.textContent = Math.ceil(this.hydration);
+
+                this.showItemMsg(`🧴 +${Math.round(sip)} hidratación · ${Math.round(this.bottleWater)}% restante`);
+
+                da.t = 0;
+                da.phase = 'lowering';
+            }
+
+        } else if (da.phase === 'lowering') {
+            da.t = Math.min(1, da.t + dt / LOWER_DUR);
+            const ease = 1 - (1 - da.t) * (1 - da.t); // ease-out
+
+            if (isFirst) {
+                wm.position.set(
+                    da.restPos.x + (1 - ease) * (-0.04),
+                    da.restPos.y + (1 - ease) * 0.18,
+                    da.restPos.z + (1 - ease) * 0.10
+                );
+                wm.rotation.set(
+                    da.restRot.x + (1 - ease) * (-1.1),
+                    da.restRot.y + (1 - ease) * 0.15,
+                    da.restRot.z + (1 - ease) * 0.2
+                );
+            } else {
+                wm.position.set(
+                    da.restPos.x,
+                    da.restPos.y + (1 - ease) * 0.25,
+                    da.restPos.z
+                );
+                wm.rotation.set(
+                    da.restRot.x + (1 - ease) * (-1.0),
+                    da.restRot.y,
+                    da.restRot.z
+                );
+            }
+
+            if (da.t >= 1) {
+                // Snap exactly to rest position
+                wm.position.copy(da.restPos);
+                wm.rotation.copy(da.restRot);
+                da.phase = 'idle';
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // BOTTLE MECHANIC
+    // ─────────────────────────────────────────────
+    useBottle() {
+        // River detection (same formula used in update())
+        const riverZCenter = Math.sin(this.player.position.x / 150) * 120 + 350;
+        const distToRiver = Math.abs(this.player.position.z - riverZCenter);
+        const nearRiver = distToRiver < 45; // slightly wider than swim-zone so you can fill from the bank
+
+        if (nearRiver) {
+            // FILL (right-click near river)
+            if (this.bottleWater >= 100) {
+                this.showItemMsg('🧴 La cantimplora ya est\u00e1 llena');
+            } else {
+                this.bottleWater = 100;
+                this.updateBottleHUD();
+                this.showItemMsg('🧴 Cantimplora llena al 100%');
+            }
+        } else {
+            // Not near river — remind player how to fill
+            this.showItemMsg('🧴 Ve al r\u00edo para llenar la cantimplora (clic derecho cerca del agua)');
+        }
+    }
+
+    useRama() {
+        // 1. Check inventory
+        const item = this.inventory[this.activeSlot];
+        if (!item || item.type !== 'Rama' || item.count <= 0) return;
+
+        // 2. Determine placement position (1.2m in front of player)
+        const dropDist = 1.2;
+        const px = this.player.position.x - Math.sin(this.player.rotationY) * dropDist;
+        const pz = this.player.position.z - Math.cos(this.player.rotationY) * dropDist;
+        const py = 0; // on ground
+
+        // Block building in river
+        const riverZ = Math.sin(px / 150) * 120 + 350;
+        if (Math.abs(pz - riverZ) < 38) {
+            this.showItemMsg('🚫 No podés armar una fogata en el río');
+            return;
+        }
+
+        // 3. Find nearby pile
+        let cf = this.findNearbyCampfire(px, pz, 1.5);
+
+        if (cf) {
+            if (cf.sticks >= 5) {
+                this.showItemMsg('🔥 La pila ya tiene 5 ramas — usá el encendedor');
+                return;
+            }
+            cf.sticks++;
+            this.addStickToVisual(cf);
+            this.showItemMsg(`🪵 Rama añadida (${cf.sticks}/5)`);
+        } else {
+            // Create new pile
+            const g = new THREE.Group();
+            g.position.set(px, py, pz);
+            this.scene.add(g);
+            cf = { mesh: g, sticks: 1, isLit: false, x: px, z: pz };
+            this.campfires.push(cf);
+            this.addStickToVisual(cf);
+            this.showItemMsg('🪵 Iniciando fogata (1/5 ramas)');
+        }
+
+        // 4. Consume 1 item
+        item.count--;
+        if (item.count <= 0) {
+            this.inventory[this.activeSlot] = null;
+        }
+        this.refreshInventorySlot(this.activeSlot);
+        if (item.count <= 0) this.equipWeapon(this.activeSlot);
+    }
+
+    useLighter() {
+        const px = this.player.position.x;
+        const pz = this.player.position.z;
+        const cf = this.findNearbyCampfire(px, pz, 2.5);
+
+        if (!cf) {
+            this.showItemMsg('🔥 No hay ninguna fogata cerca');
+            return;
+        }
+        if (cf.sticks < 5) {
+            this.showItemMsg('🔥 Faltan ramas (${cf.sticks}/5) para prender el fuego');
+            return;
+        }
+        if (cf.isLit) {
+            this.showItemMsg('🔥 La fogata ya está encendida');
+            return;
+        }
+
+        // Remove ash if re-lighting
+        if (cf.ashMesh) {
+            cf.mesh.remove(cf.ashMesh);
+            cf.ashMesh = null;
+        }
+
+        cf.isLit = true;
+
+        // Group fire visuals
+        const fg = new THREE.Group();
+        cf.fireGroup = fg;
+        cf.mesh.add(fg);
+
+        // Visual fire
+        const fireGeo = new THREE.ConeGeometry(0.35, 0.7, 8);
+        const fireMat = new THREE.MeshStandardMaterial({
+            color: 0xff4400,
+            emissive: 0xff1100,
+            emissiveIntensity: 2,
+            transparent: true,
+            opacity: 0.8
+        });
+        const fire = new THREE.Mesh(fireGeo, fireMat);
+        fire.position.set(0, 0.35, 0);
+        fg.add(fire);
+        cf.fireMesh = fire;
+
+        // Add a point light for the fire
+        const light = new THREE.PointLight(0xff6600, 15, 12);
+        light.position.set(0, 0.5, 0);
+        fg.add(light);
+
+        // Smoke particles
+        cf.smokeParticles = [];
+        const smokeGeo = new THREE.SphereGeometry(0.18, 5, 5); // slightly larger
+        const smokeMat = new THREE.MeshStandardMaterial({ color: 0x555555, transparent: true, opacity: 0.5 });
+        for (let i = 0; i < 25; i++) { // More particles
+            const s = new THREE.Mesh(smokeGeo, smokeMat.clone());
+            s.position.set((Math.random() - 0.5) * 0.3, 0.5 + Math.random() * 15, (Math.random() - 0.5) * 0.3);
+            s.scale.setScalar(0.7 + Math.random() * 1.5);
+            fg.add(s);
+            cf.smokeParticles.push({ mesh: s, speed: 0.8 + Math.random() * 2.0, offset: Math.random() * Math.PI * 2 });
+        }
+
+        this.showItemMsg('🔥 ¡Fogata encendida!');
+    }
+
+    updateCampfires(dt) {
+        const time = performance.now() * 0.001;
+        for (const cf of this.campfires) {
+            if (!cf.isLit || !cf.fireGroup) continue;
+
+            // Flicker fire
+            if (cf.fireMesh) {
+                cf.fireMesh.scale.x = 1 + Math.sin(time * 20) * 0.1;
+                cf.fireMesh.scale.z = 1 + Math.cos(time * 22) * 0.1;
+                cf.fireMesh.scale.y = 1 + Math.sin(time * 15) * 0.15;
+            }
+
+            // Animate smoke
+            if (cf.smokeParticles) {
+                for (const p of cf.smokeParticles) {
+                    p.mesh.position.y += p.speed * dt;
+                    p.mesh.position.x += Math.sin(time * 1.5 + p.offset) * 0.05;
+                    p.mesh.material.opacity -= 0.03 * dt; // slow fade
+
+                    if (p.mesh.position.y > 28 || p.mesh.material.opacity <= 0) { // Height of tallest trees
+                        p.mesh.position.y = 0.5;
+                        p.mesh.position.x = (Math.random() - 0.5) * 0.4;
+                        p.mesh.position.z = (Math.random() - 0.5) * 0.4;
+                        p.mesh.material.opacity = 0.5;
+                    }
+                }
+            }
+
+            // ── PLAYER BURNING ──
+            const dx = cf.x - this.player.position.x;
+            const dz = cf.z - this.player.position.z;
+            const distSq = dx * dx + dz * dz;
+
+            if (distSq < 1.1 * 1.1) {
+                // Take damage over time
+                this.health -= 12 * dt; // approx 12 hp per second
+                if (Math.random() < 0.15) this.triggerDamageFlash(); // flicker red
+            }
+        }
+    }
+
+    findNearbyCampfire(x, z, radius) {
+        let best = null, bestDistSq = radius * radius;
+        for (const cf of this.campfires) {
+            const dx = cf.x - x, dz = cf.z - z;
+            const d2 = dx * dx + dz * dz;
+            if (d2 < bestDistSq) {
+                bestDistSq = d2;
+                best = cf;
+            }
+        }
+        return best;
+    }
+
+    addStickToVisual(cf) {
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1.0 });
+        const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.6, 6), woodMat);
+
+        // Arrange sticks in a "teepee" or pile shape based on count
+        const i = cf.sticks - 1;
+        const angle = (i / 5) * Math.PI * 2;
+        stick.rotation.set(0.6, angle, 0); // Lean inward
+        stick.position.set(Math.cos(angle) * 0.15, 0.2, Math.sin(angle) * 0.15);
+
+        cf.mesh.add(stick);
+    }
+
+    // Update the Bottle HUD slot to show current fill %
+    updateBottleHUD() {
+        const slotIdx = this.inventory.findIndex(s => s && s.type === 'Bottle');
+        if (slotIdx === -1) return;
+        this.refreshInventorySlot(slotIdx);
+    }
+
+    useFood() {
+        const item = this.inventory[this.activeSlot];
+        if (!item || (item.type !== 'Muslo' && item.type !== 'Costilla')) return;
+
+        let gain = item.isCooked ? 30 : 20;
+
+        this.hunger = Math.min(100, this.hunger + gain);
+        item.count--;
+
+        if (item.count <= 0) {
+            this.inventory[this.activeSlot] = null;
+            this.equipWeapon(this.activeSlot);
+        }
+        this.refreshInventorySlot(this.activeSlot);
+
+        this.showItemMsg(`😋 +${gain} hambre restaurada (${item.isCooked ? 'Cocinada' : 'Cruda'})`);
+    }
+
+    tryCookFood() {
+        const activeItem = this.inventory[this.activeSlot];
+        if (!activeItem || (activeItem.type !== 'Muslo' && activeItem.type !== 'Costilla')) return;
+        if (activeItem.isCooked) {
+            this.showItemMsg('👨‍🍳 La carne ya está cocinada');
+            return;
+        }
+
+        const cf = this.findNearbyCampfire(this.player.position.x, this.player.position.z, 3.0);
+        if (!cf || !cf.isLit) {
+            this.showItemMsg('🔥 Necesitás una fogata encendida para cocinar');
+            return;
+        }
+
+        activeItem.isCooked = true;
+        this.refreshInventorySlot(this.activeSlot);
+        this.equipWeapon(this.activeSlot); // update mesh if needed (color change)
+        this.showItemMsg('👨‍🍳 ¡Carne cocinada! (Ahora nutre el doble)');
+    }
+
+    // Generic brief on-screen message that auto-fades after 2.5 s
+    showItemMsg(text) {
+        let el = document.getElementById('item-msg');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'item-msg';
+            Object.assign(el.style, {
+                position: 'fixed',
+                top: '14%',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                background: 'rgba(0,0,0,0.72)',
+                color: '#fff',
+                fontFamily: "'Inter', sans-serif",
+                fontSize: '15px',
+                padding: '8px 20px',
+                borderRadius: '8px',
+                border: '1px solid rgba(255,255,255,0.15)',
+                pointerEvents: 'none',
+                zIndex: '9999',
+                transition: 'opacity 0.4s',
+            });
+            document.body.appendChild(el);
+        }
+        el.textContent = text;
+        el.style.opacity = '1';
+        clearTimeout(this._itemMsgTimer);
+        this._itemMsgTimer = setTimeout(() => { el.style.opacity = '0'; }, 2200);
     }
 
     // ─────────────────────────────────────────────
@@ -389,6 +1192,131 @@ class RealWorldSim {
                 f.position.z += Math.cos((fi / 3) * Math.PI * 2) * 0.025 - 0.05;
                 g.add(f);
             }
+        } else if (type === 'Knife') {
+            // ── Survival knife (tactical style) ────────────────────────
+            const bladeMat2 = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.95, roughness: 0.15 });
+            const gripMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.95 });
+            const guardMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8, roughness: 0.3 });
+
+            // Blade — tapered box, tip at +Y
+            const blade = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.30, 0.07), bladeMat2);
+            blade.position.y = 0.20; g.add(blade);
+            // Serrated spine bump (decorative ridge)
+            const spine = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.22, 0.01), bladeMat2);
+            spine.position.set(0, 0.22, -0.035); g.add(spine);
+            // Crossguard
+            const guard = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.06, 0.14), guardMat);
+            guard.position.y = 0.04; g.add(guard);
+            // Handle — textured cylinder
+            const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.030, 0.16, 8), gripMat);
+            handle.position.y = -0.06; g.add(handle);
+            // Pommel
+            const pommel = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.030, 0.04, 8), guardMat);
+            pommel.position.y = -0.155; g.add(pommel);
+            // Grip ridges (3 rings)
+            for (let ri = 0; ri < 3; ri++) {
+                const ring = new THREE.Mesh(new THREE.TorusGeometry(0.030, 0.005, 6, 12), guardMat);
+                ring.rotation.x = Math.PI / 2;
+                ring.position.y = -0.035 + ri * 0.048; g.add(ring);
+            }
+
+        } else if (type === 'Bottle') {
+            // ── Military canteen flask ──────────────────────────────────
+            const feltMat = new THREE.MeshStandardMaterial({ color: 0x4a5a38, roughness: 1.0 });
+            const metalMat = new THREE.MeshStandardMaterial({ color: 0x8a8a7a, metalness: 0.7, roughness: 0.4 });
+            const strapMat = new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 1.0 });
+            const capMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.8, roughness: 0.3 });
+
+            // Flask body — flattened sphere (canteen shape)
+            const body = new THREE.Mesh(new THREE.SphereGeometry(0.095, 10, 8), feltMat);
+            body.scale.set(1.0, 1.25, 0.65);
+            body.position.y = 0.0; g.add(body);
+            // Neck
+            const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.035, 0.055, 8), metalMat);
+            neck.position.y = 0.128; g.add(neck);
+            // Cap
+            const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.035, 8), capMat);
+            cap.position.y = 0.165; g.add(cap);
+            // Horizontal leather straps (2)
+            for (const sy of [-0.03, 0.05]) {
+                const strap = new THREE.Mesh(new THREE.TorusGeometry(0.098, 0.010, 4, 16), strapMat);
+                strap.rotation.x = Math.PI / 2;
+                strap.scale.set(1.0, 1.0, 0.65);
+                strap.position.y = sy; g.add(strap);
+            }
+            // Metal rivet dots (4 corners)
+            for (const sx of [-0.07, 0.07]) for (const sy of [-0.04, 0.06]) {
+                const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.008, 5, 5), metalMat);
+                rivet.position.set(sx, sy, 0.062); g.add(rivet);
+            }
+            // Rope loop at top
+            const rope = new THREE.Mesh(new THREE.TorusGeometry(0.018, 0.005, 5, 10), strapMat);
+            rope.position.set(0, 0.18, 0); g.add(rope);
+
+        } else if (type === 'Rama') {
+            const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1.0 });
+            const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.6, 6), woodMat);
+            stick.rotation.z = Math.PI / 2;
+            g.add(stick);
+        } else if (type === 'Muslo' || type === 'Costilla') {
+            // Find if cooked from inventory state
+            const invItem = this.inventory[this.activeSlot];
+            const isCooked = invItem ? invItem.isCooked : false;
+
+            if (type === 'Muslo') {
+                const meatMat = new THREE.MeshStandardMaterial({ color: isCooked ? 0x5a2d0c : 0xc04040, roughness: 0.7 });
+                const boneMat = new THREE.MeshStandardMaterial({ color: 0xeeecee, roughness: 0.5 });
+                const meat = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.08, 4, 8), meatMat);
+                meat.rotation.z = Math.PI / 3; g.add(meat);
+                const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.22, 6), boneMat);
+                bone.rotation.z = Math.PI / 3; g.add(bone);
+            } else {
+                const meatMat = new THREE.MeshStandardMaterial({ color: isCooked ? 0x4a1a00 : 0x8b2222, roughness: 0.8 });
+                const boneMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
+                const slab = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.12, 0.05), meatMat);
+                g.add(slab);
+                for (let i = -1; i <= 1; i++) {
+                    const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.2, 4), boneMat);
+                    bone.position.x = i * 0.05; g.add(bone);
+                }
+            }
+        } else if (type === 'Lighter') {
+            // ── Zippo-style flip lighter ────────────────────────────────
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1a0a08, metalness: 0.85, roughness: 0.25 });
+            const chromeMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.95, roughness: 0.1 });
+            const flameMat = new THREE.MeshStandardMaterial({
+                color: 0xff8800, emissive: 0xff4400, emissiveIntensity: 1.8,
+                transparent: true, opacity: 0.9, roughness: 1.0
+            });
+            const flameTip = new THREE.MeshStandardMaterial({
+                color: 0xffee00, emissive: 0xffcc00, emissiveIntensity: 2.0,
+                transparent: true, opacity: 0.85, roughness: 1.0
+            });
+
+            // Main body
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.085, 0.022), bodyMat);
+            body.position.y = 0.0; g.add(body);
+            // Chrome rim line (bottom)
+            const rim = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.008, 0.025), chromeMat);
+            rim.position.y = -0.040; g.add(rim);
+            // Lid (open, tilted back)
+            const lid = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.055, 0.020), bodyMat);
+            lid.position.set(0, 0.07, 0.005);
+            lid.rotation.x = -0.55; g.add(lid);
+            // Hinge
+            const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.058, 7), chromeMat);
+            hinge.rotation.z = Math.PI / 2;
+            hinge.position.set(0, 0.043, 0.011); g.add(hinge);
+            // Flint wheel
+            const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.010, 0.010, 0.016, 8), chromeMat);
+            wheel.rotation.z = Math.PI / 2;
+            wheel.position.set(0.02, 0.048, 0.000); g.add(wheel);
+            // Flame — outer cone
+            const flame = new THREE.Mesh(new THREE.ConeGeometry(0.010, 0.040, 6), flameMat);
+            flame.position.set(0, 0.095, -0.002); g.add(flame);
+            // Flame — inner bright tip
+            const flameInner = new THREE.Mesh(new THREE.ConeGeometry(0.005, 0.022, 5), flameTip);
+            flameInner.position.set(0, 0.103, -0.002); g.add(flameInner);
         }
 
         g.traverse(c => { if (c.isMesh) c.castShadow = true; });
@@ -420,6 +1348,33 @@ class RealWorldSim {
                 wm.position.set(0.18, -0.22, -0.28);
                 wm.rotation.set(-Math.PI / 2 + 0.22, 0.18, -0.22);
                 wm.scale.setScalar(0.32);
+            } else if (item.type === 'Knife') {
+                // Low in hand, blade pointing forward-up
+                wm.position.set(0.26, -0.22, -0.34);
+                wm.rotation.set(0.15, -0.25, 0.05);
+                wm.scale.setScalar(0.55);
+            } else if (item.type === 'Bottle') {
+                // Held at hip-right, canteen flat facing player
+                wm.position.set(0.24, -0.22, -0.38);
+                wm.rotation.set(0.10, -0.20, 0.30);
+                wm.scale.setScalar(0.55);
+            } else if (item.type === 'Rama') {
+                wm.position.set(0.22, -0.18, -0.30);
+                wm.rotation.set(0.4, -0.4, 0.2);
+                wm.scale.setScalar(1.0);
+            } else if (item.type === 'Muslo') {
+                wm.position.set(0.24, -0.22, -0.32);
+                wm.rotation.set(0.1, 0, 0);
+                wm.scale.setScalar(1.2);
+            } else if (item.type === 'Costilla') {
+                wm.position.set(0.24, -0.20, -0.35);
+                wm.rotation.set(-0.2, 0.4, 0.1);
+                wm.scale.setScalar(1.2);
+            } else if (item.type === 'Lighter') {
+                // Small — cupped in palm, upright with flame visible
+                wm.position.set(0.20, -0.18, -0.30);
+                wm.rotation.set(-0.10, -0.20, 0.10);
+                wm.scale.setScalar(0.65);
             } else {
                 // Sword / default
                 wm.position.set(0.28, -0.20, -0.38);
@@ -438,6 +1393,22 @@ class RealWorldSim {
                 wm.position.set(0.0, -0.30, 0.08);
                 wm.rotation.set(-0.3, 0, 0.1);
                 wm.scale.setScalar(0.75);
+            } else if (item.type === 'Knife') {
+                wm.position.set(0.0, -0.20, 0.06);
+                wm.rotation.set(-0.3, 0, 0.05);
+                wm.scale.setScalar(1.0);
+            } else if (item.type === 'Bottle') {
+                wm.position.set(0.0, -0.18, 0.08);
+                wm.rotation.set(-0.2, 0, 0.3);
+                wm.scale.setScalar(1.0);
+            } else if (item.type === 'Rama') {
+                wm.position.set(0.05, -0.22, 0.10);
+                wm.rotation.set(-0.2, 0, 0.4);
+                wm.scale.setScalar(1.0);
+            } else if (item.type === 'Lighter') {
+                wm.position.set(0.0, -0.18, 0.06);
+                wm.rotation.set(-0.1, 0, 0.1);
+                wm.scale.setScalar(1.1);
             } else {
                 wm.position.set(0.0, -0.20, 0.06);
                 wm.rotation.set(-0.4, 0, 0.1);
@@ -612,6 +1583,8 @@ class RealWorldSim {
         this.createPedestals();
         this.createCornucopia();
         this.createForest(textures.bark);
+        this.createEnvironmentDetails(textures.bark);
+        this.createAnimals();
         this.createBorderWall();
     }
 
@@ -960,7 +1933,7 @@ class RealWorldSim {
     // FOREST
     // ─────────────────────────────────────────────
     createForest(barkTex) {
-        const realCount = 2000;
+        const realCount = 3500; // Increased Tree Count
         const trunkGeo = new THREE.CylinderGeometry(0.4, 0.6, 1, 8);
         const leavesGeo = new THREE.ConeGeometry(3, 10, 8);
         const pineTrunkGeo = new THREE.CylinderGeometry(0.3, 0.5, 1, 8);
@@ -989,26 +1962,238 @@ class RealWorldSim {
             if (Math.abs(z - riverZ) < 60) { i--; continue; }
 
             const isPine = Math.random() > 0.5;
+            let h = 1.0;
             if (isPine) {
-                const height = 15 + Math.random() * 10;
-                dummy.position.set(x, height / 2, z); dummy.scale.set(1, height, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+                h = 15 + Math.random() * 10;
+                dummy.position.set(x, h / 2, z); dummy.scale.set(1, h, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
                 pineTrunkInst.setMatrixAt(pine, dummy.matrix);
-                dummy.position.set(x, height, z); dummy.scale.set(1.5, 0.4, 1.5); dummy.updateMatrix();
+                dummy.position.set(x, h, z); dummy.scale.set(1.5, 0.4, 1.5); dummy.updateMatrix();
                 pineLeavesInst.setMatrixAt(pine, dummy.matrix);
                 pine++;
             } else {
-                const scale = 1.0 + Math.random() * 6.0;
-                dummy.position.set(x, scale / 2, z); dummy.scale.set(1, scale, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+                h = 1.0 + Math.random() * 6.0;
+                dummy.position.set(x, h / 2, z); dummy.scale.set(1, h, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
                 trunkInst.setMatrixAt(reg, dummy.matrix);
-                dummy.position.set(x, scale + 4, z); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+                dummy.position.set(x, h + 4, z); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
                 leavesInst.setMatrixAt(reg, dummy.matrix);
                 reg++;
             }
-            const tree = { type: 'tree', x, z, r: 0.8 };
+            const tree = { type: 'tree', x, z, r: 0.8, h: h, isPine: isPine };
             this.forestData.push(tree);
             this.addToSpatialHash(x, z, tree);
         }
         this.scene.add(trunkInst, leavesInst, pineTrunkInst, pineLeavesInst);
+    }
+
+    // ─────────────────────────────────────────────
+    // ENVIRONMENT DETAILS (Bushes & Twigs)
+    // ─────────────────────────────────────────────
+    createEnvironmentDetails(barkTex) {
+        // Bushes: spheres of different sizes and greens
+        const bushCount = 1800;
+        const bushGeo = new THREE.SphereGeometry(1, 8, 8);
+        const bushColors = [0x224411, 0x11330a, 0x334a1a];
+
+        // Since different colors, we split bushes into 3 InstancedMeshes
+        const bushInsts = bushColors.map(c => new THREE.InstancedMesh(bushGeo, new THREE.MeshStandardMaterial({ color: c, roughness: 1 }), bushCount / 3));
+
+        // Twigs: small cylinders
+        const twigCount = 1200;
+        const twigGeo = new THREE.CylinderGeometry(0.04, 0.04, 1, 6);
+        const twigInst = new THREE.InstancedMesh(twigGeo, new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1 }), twigCount);
+
+        const dummy = new THREE.Object3D();
+
+        // Place Bushes
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < bushCount / 3; j++) {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 30 + Math.random() * (this.arenaRadius - 60);
+                const x = Math.cos(angle) * dist, z = Math.sin(angle) * dist;
+                const riverZ = Math.sin(x / 150) * 120 + 350;
+                if (Math.abs(z - riverZ) < 50) { j--; continue; }
+
+                const s = 0.5 + Math.random() * 2.0;
+                dummy.position.set(x, s * 0.4, z);
+                dummy.scale.set(s, s * 0.8, s);
+                dummy.rotation.set(0, Math.random() * Math.PI, 0);
+                dummy.updateMatrix();
+                bushInsts[i].setMatrixAt(j, dummy.matrix);
+            }
+            this.scene.add(bushInsts[i]);
+        }
+
+        // Place Twigs
+        for (let i = 0; i < twigCount; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 30 + Math.random() * (this.arenaRadius - 60);
+            const x = Math.cos(angle) * dist, z = Math.sin(angle) * dist;
+            const riverZ = Math.sin(x / 150) * 120 + 350;
+            if (Math.abs(z - riverZ) < 40) { i--; continue; }
+
+            const s = 0.5 + Math.random();
+            dummy.position.set(x, 0.05, z);
+            dummy.scale.set(1, s, 1);
+            dummy.rotation.set(Math.PI / 2, Math.random() * Math.PI, Math.random() * 0.5);
+            dummy.updateMatrix();
+            twigInst.setMatrixAt(i, dummy.matrix);
+
+            // Store metadata for picking up
+            this.environmentMeshData.twigs.push({ x, z, originalIndex: i, collected: false });
+        }
+        this.twigInst = twigInst;
+        this.scene.add(twigInst);
+    }
+
+    // ─────────────────────────────────────────────
+    // ANIMALS
+    // ─────────────────────────────────────────────
+    createAnimals() {
+        const createRabbit = () => {
+            const g = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), new THREE.MeshStandardMaterial({ color: 0x998877 }));
+            body.scale.set(1.4, 1, 1);
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), new THREE.MeshStandardMaterial({ color: 0x998877 }));
+            head.position.set(0.18, 0.15, 0);
+            const ears = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.2, 0.08), new THREE.MeshStandardMaterial({ color: 0xaa9988 }));
+            ears.position.set(0.2, 0.3, 0);
+            g.add(body, head, ears);
+            return g;
+        };
+
+        const createDeer = () => {
+            const g = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 0.3), new THREE.MeshStandardMaterial({ color: 0x8b5a2b }));
+            body.position.y = 0.8;
+            const neck = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.5, 0.15), new THREE.MeshStandardMaterial({ color: 0x8b5a2b }));
+            neck.position.set(0.3, 1.2, 0); neck.rotation.z = -0.4;
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.15, 0.15), new THREE.MeshStandardMaterial({ color: 0x8b5a2b }));
+            head.position.set(0.45, 1.4, 0);
+            const legs = [];
+            for (let i = 0; i < 4; i++) {
+                const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.08), new THREE.MeshStandardMaterial({ color: 0x5d3a1a }));
+                leg.position.set(i < 2 ? 0.2 : -0.2, 0.4, i % 2 ? 0.1 : -0.1);
+                legs.push(leg);
+            }
+            // Antlers for some deer
+            if (Math.random() > 0.5) {
+                const antlers = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.4, 0.4), new THREE.MeshStandardMaterial({ color: 0x4a2a1a }));
+                antlers.position.set(0.45, 1.65, 0); g.add(antlers);
+            }
+            g.add(body, neck, head, ...legs);
+            return g;
+        };
+
+        // Spawn 100 Rabbits
+        for (let i = 0; i < 100; i++) {
+            const mesh = createRabbit();
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 50 + Math.random() * (this.arenaRadius - 100);
+            const x = Math.cos(angle) * dist, z = Math.sin(angle) * dist;
+            mesh.position.set(x, 0, z);
+            this.scene.add(mesh);
+            this.animals.push({
+                mesh, type: 'rabbit', state: 'idle', t: 0,
+                pos: mesh.position.clone(), rot: Math.random() * Math.PI * 2,
+                hp: 1, maxHp: 1, radius: 0.4, height: 0.5
+            });
+        }
+
+        // Spawn 50 Deer
+        for (let i = 0; i < 50; i++) {
+            const mesh = createDeer();
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 50 + Math.random() * (this.arenaRadius - 100);
+            const x = Math.cos(angle) * dist, z = Math.sin(angle) * dist;
+            mesh.position.set(x, 0, z);
+            this.scene.add(mesh);
+            this.animals.push({
+                mesh, type: 'deer', state: 'idle', t: 0,
+                pos: mesh.position.clone(), rot: Math.random() * Math.PI * 2,
+                hp: 2, maxHp: 2, radius: 0.8, height: 1.6
+            });
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // ANIMAL AI
+    // ─────────────────────────────────────────────
+    updateAnimals(dt) {
+        for (const a of this.animals) {
+            const distToPlayer = a.mesh.position.distanceTo(this.player.position);
+            a.t -= dt;
+
+            // Simple State Machine
+            if (a.t <= 0) {
+                if (a.state === 'idle') {
+                    a.state = 'moving';
+                    a.t = 2 + Math.random() * 5;
+                    a.targetRot = Math.random() * Math.PI * 2;
+                } else {
+                    a.state = 'idle';
+                    a.t = 1 + Math.random() * 3;
+                }
+            }
+
+            // Fear logic
+            if (distToPlayer < 15 && this.isSprinting) {
+                a.state = 'fleeing';
+                a.t = 3;
+                // Move away from player
+                const dir = a.mesh.position.clone().sub(this.player.position).normalize();
+                a.targetRot = Math.atan2(dir.x, dir.z);
+            }
+
+            if (a.state === 'moving' || a.state === 'fleeing') {
+                const speed = (a.type === 'deer' ? (a.state === 'fleeing' ? 12 : 3) : (a.state === 'fleeing' ? 6 : 2)) * dt;
+
+                // Smooth rotation
+                a.rot += (a.targetRot - a.rot) * 0.1;
+                a.mesh.rotation.y = a.rot;
+
+                const vx = Math.sin(a.rot) * speed;
+                const vz = Math.cos(a.rot) * speed;
+
+                // Procedural Hop for rabbits
+                if (a.type === 'rabbit') {
+                    a.mesh.position.y = Math.abs(Math.sin(performance.now() * 0.01)) * 0.4;
+                }
+
+                a.mesh.position.x += vx;
+                a.mesh.position.z += vz;
+
+                // River avoidance logic
+                const riverZ = Math.sin(a.mesh.position.x / 150) * 120 + 350;
+                if (Math.abs(a.mesh.position.z - riverZ) < 42) {
+                    // Too close to river! Step back and turn around
+                    a.mesh.position.x -= vx;
+                    a.mesh.position.z -= vz;
+                    a.targetRot += Math.PI; // Pick a different direction
+                    a.t = 1; // pause shortly
+                }
+
+                // Tree/Rock collision for animals
+                const nearby = this.getNearbyObjects(a.mesh.position.x, a.mesh.position.z);
+                for (const obj of nearby) {
+                    const dx = a.mesh.position.x - obj.x;
+                    const dz = a.mesh.position.z - obj.z;
+                    const rSum = obj.r + 0.6; // animal radius approx
+                    if (dx * dx + dz * dz < rSum * rSum) {
+                        a.mesh.position.x -= vx;
+                        a.mesh.position.z -= vz;
+                        a.targetRot += Math.PI * 0.5 + Math.random(); // Turn away
+                        break;
+                    }
+                }
+
+                // Arena boundary check
+                if (a.mesh.position.length() > this.arenaRadius - 20) {
+                    a.targetRot += Math.PI; // turn around
+                }
+            } else {
+                a.mesh.position.y *= 0.8; // settle to ground
+            }
+        }
     }
 
     // ─────────────────────────────────────────────
@@ -1057,29 +2242,84 @@ class RealWorldSim {
     // UPDATE
     // ─────────────────────────────────────────────
     update() {
-        if (!this.simulationRunning) return;
+        if (!this.simulationRunning || this._isDead) return;
 
-        // Look
+        const dt = Math.min(this.clock.getDelta(), 0.05);
+
+        // ── 1. Update Crouch State first ────────────────
+        this.player.isCrouching = !!this.keys['shift'];
+        const currentHeight = this.player.isCrouching ? this.player.crouchHeight : this.player.height;
+
+        // ── 2. Global World State (Always Update) ───────
+        this.updateSurvival(dt);
+        this.updateAnimals(dt);
+        this.updateProjectiles(dt);
+        this.updateDayNight(dt);
+        this.updateFOV(dt);
+        this.updateCampfires(dt);
+        this.updateCharge(dt);
+        this.updateDrinkAnim(dt);
+        this.checkNearWeapon();
+
+        // ── 3. Player Movement & Physics ────────────────
+        if (this.isClimbing) {
+            // Rotation (Look around)
+            this.player.rotationY -= this.mouse.x;
+            this.player.rotationX -= this.mouse.y;
+            this.player.rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.player.rotationX));
+            this.mouse.x = 0; this.mouse.y = 0;
+
+            // ── Sticky Attachment ─────────────────────
+            if (this.climbingTreePos) {
+                const dx = this.player.position.x - this.climbingTreePos.x;
+                const dz = this.player.position.z - this.climbingTreePos.z;
+                const angle = Math.atan2(dz, dx);
+                const snapDist = 0.85;
+                this.player.position.x = this.climbingTreePos.x + Math.cos(angle) * snapDist;
+                this.player.position.z = this.climbingTreePos.z + Math.sin(angle) * snapDist;
+            }
+
+            const climbSpeed = 5 * dt;
+            if (this.keys['w']) this.player.position.y += climbSpeed;
+            if (this.keys['s']) this.player.position.y -= climbSpeed;
+
+            // ── Height Limit (Stay on trunk, below leaves) ──
+            let maxH = 25;
+            if (this.climbingTreePos) {
+                // Pine leaves (sphere) start at h - 4. Regular leaves (cone) start at h - 1.
+                // We leave a small extra buffer so the camera doesn't clip into leaves at all.
+                const leavesOffset = this.climbingTreePos.isPine ? 4.8 : 1.8;
+                maxH = this.climbingTreePos.h - leavesOffset;
+            }
+            this.player.position.y = Math.min(this.player.position.y, maxH + currentHeight);
+
+            // Exit if reached floor
+            const groundY = 0;
+            if (this.player.position.y < groundY + currentHeight + 0.1) {
+                this.exitClimb();
+                this.player.position.y = groundY + currentHeight;
+                this.player.isOnGround = true;
+            }
+
+            this.animatePlayerMesh(false, false, false, dt);
+            this.updateCamera(currentHeight);
+            return;
+        }
+
+        // Normal rotation
         this.player.rotationY -= this.mouse.x;
         this.player.rotationX -= this.mouse.y;
         this.player.rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.player.rotationX));
         this.mouse.x = 0; this.mouse.y = 0;
-
-        // Crouch
-        this.player.isCrouching = !!this.keys['shift'];
-        const currentHeight = this.player.isCrouching ? this.player.crouchHeight : this.player.height;
 
         // ── Water detection ──────────────────────
         const riverZCenter = Math.sin(this.player.position.x / 150) * 120 + 350;
         const waterSurface = 0.05;
         const distToRiver = Math.abs(this.player.position.z - riverZCenter);
         const overRiver = distToRiver < 35;
-        // Only "in water" if they're at or below the surface
-        // inWater always uses standing height to detect proximity to river surface
-        // (so pressing Shift while on water doesn't suddenly make inWater false)
         const inWater = overRiver && (this.player.position.y <= waterSurface + this.player.height + 0.3);
 
-        // ── Movement ─────────────────────────────
+        // Horizontal Movement
         const moveDir = new THREE.Vector3();
         if (this.keys['w']) moveDir.z -= 1;
         if (this.keys['s']) moveDir.z += 1;
@@ -1090,7 +2330,7 @@ class RealWorldSim {
         if (isMoving) {
             let spd = this.player.speed;
             if (this.player.isCrouching) spd *= 0.5;
-            if (this.isSprinting && !this.player.isCrouching) spd *= 1.9;  // sprint boost
+            if (this.isSprinting && !this.player.isCrouching) spd *= 1.9;
             if (inWater && this.player.position.y < waterSurface - 0.5) spd *= 0.55;
 
             moveDir.normalize().multiplyScalar(spd);
@@ -1109,11 +2349,8 @@ class RealWorldSim {
                     const dx = nextX - obj.x, dz = nextZ - obj.z;
                     if (dx * dx + dz * dz < (obj.r + pR) ** 2) {
                         if (obj.type === 'tree') {
-                            // Trees block if player is at ground level (not deep in river)
                             if (pFeet > -1) { col = true; break; }
                         } else if (obj.type === 'rock') {
-                            // Block only if player feet are below the rock top (can't jump over)
-                            // Allow jump-over: player is blocked only when feet below topY
                             if (pFeet < obj.topY + 0.05 && this.player.position.y < obj.topY + currentHeight + 0.4) {
                                 col = true; break;
                             }
@@ -1121,24 +2358,15 @@ class RealWorldSim {
                     }
                 }
 
-                // Pedestal
                 if (!col) {
                     for (const p of this.pedestals) {
                         const dx = nextX - p.x, dz = nextZ - p.z;
-                        if (dx * dx + dz * dz < (p.r + pR) ** 2 && this.player.position.y < p.h + 0.15) {
-                            col = true; break;
-                        }
+                        if (dx * dx + dz * dz < (pR + p.r) ** 2 && this.player.position.y < p.h + 0.15) { col = true; break; }
                     }
                 }
-
-                // Solid boxes (Cornucopia walls)
                 if (!col) {
                     for (const b of this.solidBoxes) {
-                        if (nextX >= b.x1 - pR && nextX <= b.x2 + pR &&
-                            nextZ >= b.z1 - pR && nextZ <= b.z2 + pR &&
-                            this.player.position.y < b.h) {
-                            col = true; break;
-                        }
+                        if (nextX >= b.x1 - pR && nextX <= b.x2 + pR && nextZ >= b.z1 - pR && nextZ <= b.z2 + pR && this.player.position.y < b.h) { col = true; break; }
                     }
                 }
 
@@ -1148,38 +2376,26 @@ class RealWorldSim {
                 }
             }
         }
-
-        // Animate player mesh
-        const dt = Math.min(this.clock.getDelta(), 0.05);
         this.animatePlayerMesh(isMoving, this.player.isCrouching, this.isSprinting, dt);
-        this.updateSurvival(dt);
-        this.checkNearWeapon();
-        this.updateCharge(dt);
-        this.updateProjectiles(dt);
-        this.updateFOV(dt);
 
-        // ── Vertical physics ──────────────────────
-        // Determine "floor" height at player X,Z
+        // Vertical physics
         let groundY = 0;
-        // Pedestal standing?
         for (const p of this.pedestals) {
             const dx = this.player.position.x - p.x, dz = this.player.position.z - p.z;
             if (dx * dx + dz * dz < p.r * p.r) { groundY = p.h; break; }
         }
-        // Rock standing?
         for (const r of this.getNearbyObjects(this.player.position.x, this.player.position.z)) {
-            if (r.type !== 'rock') continue;
-            const dx = this.player.position.x - r.x, dz = this.player.position.z - r.z;
-            if (dx * dx + dz * dz < r.r * r.r * 0.7) {
-                if (r.topY > groundY) groundY = r.topY;
+            if (r.type === 'rock') {
+                const dx = this.player.position.x - r.x, dz = this.player.position.z - r.z;
+                if (dx * dx + dz * dz < r.r * r.r * 0.7) {
+                    if (r.topY > groundY) groundY = r.topY;
+                }
             }
         }
 
         if (inWater) {
             const baseWater = waterSurface + currentHeight;
-
             if (!this.player.isCrouching) {
-                // Not crouching → float up gradually (buoyancy)
                 if (this.player.position.y < baseWater - 0.05) {
                     this.player.verticalVelocity += 0.022;
                     this.player.verticalVelocity *= 0.82;
@@ -1192,25 +2408,19 @@ class RealWorldSim {
                     this.updateCamera(currentHeight);
                     if (this.sun) { this.sun.target.position.set(this.player.position.x, 0, this.player.position.z); this.sun.target.updateMatrixWorld(); }
                     return;
-                } else {
-                    groundY = waterSurface;
-                }
+                } else { groundY = -15; }
             } else {
-                // Crouching → sink hard and fast
                 this.player.isOnGround = false;
                 const sinkTargetY = -14.5 + currentHeight;
-
-                // Apply strong downward force while not at bottom
                 if (this.player.position.y > sinkTargetY + 0.05) {
-                    this.player.verticalVelocity -= 0.05; // strong pull down
-                    this.player.verticalVelocity = Math.max(this.player.verticalVelocity, -0.4); // cap speed
+                    this.player.verticalVelocity -= 0.05;
+                    this.player.verticalVelocity = Math.max(this.player.verticalVelocity, -0.4);
                 } else {
                     this.player.verticalVelocity = 0;
                     this.player.position.y = sinkTargetY;
                 }
-
                 this.player.position.y += this.player.verticalVelocity;
-                if (this.keys[' ']) { this.player.verticalVelocity = 0.15; } // swim up
+                if (this.keys[' ']) this.player.verticalVelocity = 0.15;
 
                 this.updateCamera(currentHeight);
                 if (this.sun) { this.sun.target.position.set(this.player.position.x, 0, this.player.position.z); this.sun.target.updateMatrixWorld(); }
@@ -1218,10 +2428,8 @@ class RealWorldSim {
             }
         }
 
-        // Normal land physics
         const baseY = groundY + currentHeight;
         if (this.player.isOnGround && this.player.position.y > baseY + 0.12) this.player.isOnGround = false;
-
         if (this.keys[' '] && this.player.isOnGround) {
             this.player.verticalVelocity = 0.26;
             this.player.isOnGround = false;
@@ -1240,8 +2448,45 @@ class RealWorldSim {
             this.sun.target.position.set(this.player.position.x, 0, this.player.position.z);
             this.sun.target.updateMatrixWorld();
         }
-
         this.updateCamera(currentHeight);
+    }
+
+    updateDayNight(dt) {
+        this.dayCycleTime += dt;
+        const cyclePercent = (this.dayCycleTime % this.totalCycleDuration) / this.totalCycleDuration;
+        const angle = cyclePercent * Math.PI * 2;
+
+        // Rotation: Sun rises in East (+X), sets in West (-X)
+        // angle 0 = sunrise, angle PI/2 = noon, angle PI = sunset
+        const radius = 600;
+        const sunX = Math.cos(angle) * radius;
+        const sunY = Math.sin(angle) * radius;
+        this.sun.position.set(sunX, sunY, 150);
+
+        // Intensity
+        const dayFactor = Math.max(0, Math.sin(angle)); // 1 at noon, 0 at night
+        this.sun.intensity = dayFactor * 1.5;
+        this.ambientLight.intensity = 0.05 + dayFactor * 0.55;
+        this.hemiLight.intensity = 0.05 + dayFactor * 0.55;
+
+        // Sun color (warmer during sunrise/sunset)
+        const sunsetFactor = Math.pow(1 - Math.abs(dayFactor - 0.5) * 2, 2);
+        this.sun.color.setHSL(0.1, 0.5 * sunsetFactor, 1.0);
+
+        // Sky / Fog Colors
+        const skyDay = new THREE.Color(0x87ceeb);
+        const skyNight = new THREE.Color(0x02020a);
+        const currentSky = skyNight.clone().lerp(skyDay, dayFactor);
+
+        // Apply sunset tint
+        const sunSetColor = new THREE.Color(0xff7744);
+        currentSky.lerp(sunSetColor, sunsetFactor * 0.4 * dayFactor);
+
+        this.scene.background = currentSky;
+        if (this.scene.fog) {
+            this.scene.fog.color = currentSky;
+            this.scene.fog.density = 0.003 + (1 - dayFactor) * 0.004;
+        }
     }
 
     // ─────────────────────────────────────────────
@@ -1294,7 +2539,33 @@ class RealWorldSim {
         this.minimapCanvas = document.getElementById('minimap');
         this.minimapCtx = this.minimapCanvas ? this.minimapCanvas.getContext('2d') : null;
         // View range: 1/3 of full arena radius
-        this.minimapViewRange = this.arenaRadius / 3; // 200 units
+        this.minimapViewRange = this.arenaRadius * 1.05; // Extend to full arena
+    }
+
+    // ─────────────────────────────────────────────
+    // STARTING INVENTORY
+    // ─────────────────────────────────────────────
+    setupStartingInventory() {
+        const startItems = [
+            { type: 'Knife', icon: '🔪' },   // slot 0
+            { type: 'Bottle', icon: '🧴' },   // slot 1
+            { type: 'Lighter', icon: '🔥' },   // slot 2
+        ];
+
+        startItems.forEach((item, idx) => {
+            this.inventory[idx] = { type: item.type, icon: item.icon };
+            const slotEl = document.getElementById('inv-' + idx);
+            if (slotEl) {
+                slotEl.querySelector('.inv-slot-icon').textContent = item.icon;
+                slotEl.querySelector('.inv-slot-name').textContent = item.type;
+            }
+        });
+
+        // Equip slot 0 (Knife) as the active weapon
+        this.activeSlot = 0;
+        document.querySelectorAll('.inv-slot').forEach((s, i) =>
+            s.classList.toggle('active', i === 0));
+        this.equipWeapon(0);
     }
 
     renderMinimap() {
@@ -1374,6 +2645,24 @@ class RealWorldSim {
             const s = toScreen(t.x, t.z);
             ctx.beginPath();
             ctx.arc(s.x, s.y, treeDotR, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // ── Campfires ────────────────────────────
+        for (const cf of this.campfires) {
+            if (!cf.isLit) continue;
+            const s = toScreen(cf.x, cf.z);
+            if (s.x < 0 || s.x > W || s.y < 0 || s.y > H) continue;
+
+            const pulse = (Math.sin(performance.now() * 0.01) + 1) / 2;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, 4 + pulse * 4, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 100, 0, ${0.4 + pulse * 0.4})`;
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffcc00';
             ctx.fill();
         }
 
@@ -1512,11 +2801,39 @@ class RealWorldSim {
         const power = Math.max(0.15, this.chargeAmount);
         this.chargeAmount = 0;
 
-        // Melee weapons (Sword) — no projectile, just a recoil swing
-        if (item.type === 'Sword') {
+        // Melee weapons (Sword / Knife)
+        if (item.type === 'Sword' || item.type === 'Knife') {
             this.weaponRecoil = 0.25;
             if (this.heldWeaponMesh) {
-                this.heldWeaponMesh.rotation.x -= 0.5 * power;
+                this.heldWeaponMesh.rotation.x -= 0.6; // swing animation
+                setTimeout(() => { if (this.heldWeaponMesh) this.heldWeaponMesh.rotation.x += 0.6; }, 150);
+            }
+
+            const range = item.type === 'Sword' ? 3.5 : 2.2;
+            const dmg = item.type === 'Sword' ? 1.0 : 0.6; // 2 hits with sword = 2hp (deer)
+
+            // Hit detection for animals
+            const dir = new THREE.Vector3();
+            this.camera.getWorldDirection(dir);
+            for (let j = this.animals.length - 1; j >= 0; j--) {
+                const a = this.animals[j];
+                const dx = a.mesh.position.x - this.player.position.x;
+                const dz = a.mesh.position.z - this.player.position.z;
+                const d2 = dx * dx + dz * dz;
+
+                if (d2 < range * range) {
+                    // Check if in front of player
+                    const toA = a.mesh.position.clone().sub(this.player.position).normalize();
+                    if (dir.dot(toA) > 0.4) {
+                        a.hp -= dmg;
+                        if (a.hp <= 0) {
+                            this.killAnimal(a, j);
+                        } else {
+                            this.showItemMsg(`💥 Golpe! (${a.type} ${Math.ceil(a.hp)} HP)`);
+                        }
+                        break; // only hit one per swing
+                    }
+                }
             }
             return;
         }
@@ -1676,11 +2993,47 @@ class RealWorldSim {
                 }
             }
 
-            // 3. Fell into abyss
+            // 3. Animals
+            if (!hit) {
+                for (let j = this.animals.length - 1; j >= 0; j--) {
+                    const a = this.animals[j];
+                    const dx = p.mesh.position.x - a.mesh.position.x;
+                    const dz = p.mesh.position.z - a.mesh.position.z;
+                    const dy = p.mesh.position.y - (a.mesh.position.y + a.height * 0.5);
+
+                    const distSq = dx * dx + dz * dz + dy * dy;
+                    if (distSq < a.radius * a.radius) {
+                        const dmg = p.type === 'Spear' ? 2 : 1;
+                        a.hp -= dmg;
+
+                        // Impact effect: small red flash or just stick it
+                        stickIt(0.05);
+                        hit = true;
+
+                        if (a.hp <= 0) {
+                            this.killAnimal(a, j);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // 4. Fell into abyss
             if (!hit && p.mesh.position.y < -20) {
                 this.scene.remove(p.mesh);
                 this.projectiles.splice(i, 1);
             }
         }
+    }
+
+    killAnimal(animal, index) {
+        this.scene.remove(animal.mesh);
+        if (animal.type === 'rabbit') {
+            this.spawnLoot('Muslo', '🍗', animal.mesh.position.x, animal.mesh.position.z, 5);
+        } else if (animal.type === 'deer') {
+            this.spawnLoot('Costilla', '🍖', animal.mesh.position.x, animal.mesh.position.z, 2);
+        }
+        this.animals.splice(index, 1);
+        this.showItemMsg(`💥 ${animal.type.toUpperCase()} ELIMINADO`);
     }
 }

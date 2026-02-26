@@ -593,6 +593,64 @@
             background: linear-gradient(90deg, #28c840, #55d020);
             transition: background 0.1s;
         }
+
+        /* ── DEATH SCREEN ── */
+        #death-screen {
+            position: fixed;
+            inset: 0;
+            background: #000;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999;
+            opacity: 0;
+            transition: opacity 2s ease;
+        }
+
+        #death-screen.active {
+            display: flex;
+            opacity: 1;
+        }
+
+        #death-text {
+            font-family: 'Cinzel', serif;
+            font-size: 80px;
+            color: #c0392b;
+            text-transform: uppercase;
+            letter-spacing: 15px;
+            filter: drop-shadow(0 0 30px rgba(192, 57, 43, 0.6));
+            animation: deathPulse 3s infinite alternate;
+        }
+
+        @keyframes deathPulse {
+            from {
+                transform: scale(1);
+                opacity: 0.8;
+            }
+
+            to {
+                transform: scale(1.05);
+                opacity: 1;
+            }
+        }
+
+        /* ── DAMAGE FLASH ── */
+        #damage-flash {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 60;
+            background: radial-gradient(ellipse at center, transparent 20%, rgba(200, 0, 0, 0.55) 100%);
+            opacity: 0;
+            transition: opacity 0.6s ease-out;
+        }
+
+        #damage-flash.active {
+            opacity: 1;
+            transition: opacity 0s;
+            /* instant flash in */
+        }
     </style>
 </head>
 
@@ -693,11 +751,29 @@
             <div class="inv-slot-icon">⬜</div>
             <div class="inv-slot-name">Empty</div>
         </div>
+        <div class="inv-slot" id="inv-5">
+            <div class="inv-slot-num">6</div>
+            <div class="inv-slot-icon">⬜</div>
+            <div class="inv-slot-name">Empty</div>
+        </div>
+        <div class="inv-slot" id="inv-6">
+            <div class="inv-slot-num">7</div>
+            <div class="inv-slot-icon">⬜</div>
+            <div class="inv-slot-name">Empty</div>
+        </div>
     </div>
     <div id="pickup-hint">Press E to pick up</div>
 
+    <!-- Damage flash (low survival stats) -->
+    <div id="damage-flash"></div>
+
     <!-- Aim overlay (RMB zoom) -->
     <div id="aim-overlay"></div>
+
+    <!-- Death Screen -->
+    <div id="death-screen">
+        <div id="death-text">YOU DIED</div>
+    </div>
 
     <!-- Charge bar (LMB hold) -->
     <div id="charge-wrap">
