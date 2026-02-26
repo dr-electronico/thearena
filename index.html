@@ -735,6 +735,157 @@
             transition: opacity 0s;
             /* instant flash in */
         }
+
+        /* ── STEP SYSTEM ── */
+        .step {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            animation: fadeIn 0.5s ease;
+        }
+
+        .step.active {
+            display: flex;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* ── MODE SELECTION ── */
+        .mode-cards {
+            display: flex;
+            width: 100%;
+            /* Changed from 100vw */
+            height: 400px;
+            max-width: 1100px;
+            margin-top: 40px;
+            gap: 2px;
+            overflow: hidden;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.05);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+            position: relative;
+            /* Added for divider positioning */
+        }
+
+        .mode-cards::after {
+            /* Vertical divider */
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 15%;
+            bottom: 15%;
+            width: 1px;
+            background: rgba(255, 255, 255, 0.1);
+            z-index: 3;
+            transform: translateX(-50%);
+        }
+
+        .mode-card {
+            flex: 1;
+            /* Ensures 50/50 split by default */
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            cursor: pointer;
+            transition: all 0.6s cubic-bezier(0.165, 0.84, 0.44, 1);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+            position: relative;
+            text-align: center;
+            border: none;
+            width: auto;
+        }
+
+        .mode-card::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at center, transparent 0%, rgba(0, 0, 0, 0.8) 100%);
+            opacity: 0.6;
+            transition: opacity 0.3s;
+        }
+
+        .mode-card:hover {
+            flex: 1.5;
+            background: rgba(0, 0, 0, 0.2);
+            transform: none;
+            box-shadow: none;
+        }
+
+        .mode-card:hover::before {
+            opacity: 0.2;
+        }
+
+        .mode-card.online:hover {
+            background: linear-gradient(135deg, rgba(243, 156, 18, 0.2) 0%, rgba(0, 0, 0, 0.4) 100%);
+        }
+
+        .mode-card.local:hover {
+            background: linear-gradient(135deg, rgba(52, 152, 219, 0.2) 0%, rgba(0, 0, 0, 0.4) 100%);
+        }
+
+        .mode-card>* {
+            position: relative;
+            z-index: 2;
+        }
+
+        .mode-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+            transition: transform 0.5s;
+        }
+
+        .mode-card:hover .mode-icon {
+            transform: scale(1.2) translateY(-10px);
+        }
+
+        .mode-name {
+            font-family: 'Cinzel', serif;
+            font-size: 32px;
+            color: #fff;
+            margin-bottom: 15px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        .mode-desc {
+            font-size: 15px;
+            color: rgba(255, 255, 255, 0.6);
+            line-height: 1.6;
+            max-width: 300px;
+            opacity: 0.7;
+            transition: opacity 0.3s;
+        }
+
+        .mode-card:hover .mode-desc {
+            opacity: 1;
+        }
+
+        .badge-limited {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #e74c3c;
+            color: #fff;
+            font-size: 11px;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+        }
     </style>
 </head>
 
@@ -777,13 +928,44 @@
                             id="saved-name">Tribute</span>?</button>
                 </div>
 
-                <button class="btn" id="nextBtn" disabled onclick="startGame()">Enter the Arena</button>
+                <button class="btn" id="nextBtn" disabled onclick="showModeSelect()">Enter the Arena</button>
+            </div>
+
+            <!-- Step 2: Mode Select -->
+            <div class="step" id="step2">
+                <div class="step-label">Step 2 — Select Game Mode</div>
+
+                <div class="mode-cards">
+                    <div class="mode-card online" onclick="finalStart()">
+                        <span class="mode-icon">🌐</span>
+                        <span class="mode-name">Online Play</span>
+                        <span class="mode-desc">Enter the simulation and compete for survival in the global
+                            arena.</span>
+                    </div>
+
+                    <div class="mode-card local"
+                        onclick="alert('Local Play is coming soon! For now, please use Online Play.')">
+                        <span class="badge-limited">COMING SOON</span>
+                        <span class="mode-icon">🏠</span>
+                        <span class="mode-name">Local Play</span>
+                        <span class="mode-desc">Practice offline or host a private match in your own environment.</span>
+                    </div>
+                </div>
+
+                <button class="btn"
+                    style="margin-top: 40px; background: transparent; border: 1px solid rgba(255,255,255,0.2);"
+                    onclick="document.getElementById('step2').classList.remove('active'); document.getElementById('step1').classList.add('active');">Back
+                    to Tribute Selection</button>
             </div>
         </div>
     </div>
 
-    <div id="hud">WASD: MOVE &nbsp;•&nbsp; MOUSE: LOOK &nbsp;•&nbsp; SPACE: JUMP &nbsp;•&nbsp; SHIFT: DIVE &nbsp;•&nbsp;
-        P: CAMERA &nbsp;•&nbsp; E: PICK UP &nbsp;•&nbsp; <span style="color:#f39c12">LMB (hold): CHARGE &nbsp;•&nbsp;
+
+
+    <div id="hud">WASD: MOVE &nbsp;•&nbsp; MOUSE: LOOK &nbsp;•&nbsp; SPACE: JUMP &nbsp;•&nbsp; SHIFT: DIVE
+        &nbsp;•&nbsp;
+        P: CAMERA &nbsp;•&nbsp; E: PICK UP &nbsp;•&nbsp; <span style="color:#f39c12">LMB (hold): CHARGE
+            &nbsp;•&nbsp;
             LMB (release): FIRE &nbsp;•&nbsp; RMB: AIM</span></div>
     <div id="camBadge" id="camBadge">📷 FIRST PERSON</div>
     <div id="gameContainer"></div>
@@ -935,14 +1117,21 @@
 
         function selectContinue() {
             loadSavedData = true;
-            startGame();
+            showModeSelect();
         }
 
-        function startGame() {
+        function showModeSelect() {
             const nameInput = document.getElementById('player-name-input');
             const playerName = nameInput.value.trim() || 'Katniss';
 
-            if (!selectedChar && !loadSavedData) return;
+            // Advance UI
+            document.getElementById('step1').classList.remove('active');
+            document.getElementById('step2').classList.add('active');
+        }
+
+        function finalStart() {
+            const nameInput = document.getElementById('player-name-input');
+            const playerName = nameInput.value.trim() || 'Katniss';
 
             const overlay = document.getElementById('overlay');
             overlay.classList.add('hidden');
