@@ -100,6 +100,7 @@ class RealWorldSim {
         // ── SAVE SYSTEM ─────────────────────────────
         this.saveTimer = 0;
         this.saveInterval = 5.0; // Seconds between autosaves
+        this.animalSpawnTimer = 0; // Timer for periodic spawning
 
         // ── Animals & World Pop ─────────────────────
         this.animals = [];      // { mesh, type, state, t, targetVel, targetRot }
@@ -511,10 +512,11 @@ class RealWorldSim {
         }, { passive: true });
 
         // ── Non-combat item types ──────────────────────────────────────
-        const NON_COMBAT = ['Bottle', 'Lighter'];
+        const NON_COMBAT = ['Bottle', 'Lighter', 'Rama'];
 
         // ── Combat: LMB = charge, release = fire ─────
         this.renderer.domElement.addEventListener('mousedown', (e) => {
+            if (this._isDead) return;
             const activeItem = this.inventory[this.activeSlot];
             const activeType = activeItem ? activeItem.type : null;
 
@@ -527,32 +529,14 @@ class RealWorldSim {
                     this.isCharging = true;
                     this.chargeStart = performance.now();
                 }
-            }
-            if (e.button === 2) { // right
+            } else if (e.button === 2) { // right
                 if (activeType === 'Bottle') {
                     // Extinguish fire if bottle is full
                     const cf = this.findNearbyCampfire(this.player.position.x, this.player.position.z, 3.0);
                     if (cf && cf.isLit && this.bottleWater >= 100) {
                         this.bottleWater = 0;
                         this.updateBottleHUD();
-                        cf.isLit = false;
-                        if (cf.fireGroup) {
-                            cf.mesh.remove(cf.fireGroup);
-                            cf.fireGroup = null;
-                        }
-
-                        // Leave ASHES
-                        if (!cf.ashMesh) {
-                            const ashGeo = new THREE.CircleGeometry(0.5, 12);
-                            const ashMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 1.0 });
-                            const ash = new THREE.Mesh(ashGeo, ashMat);
-                            ash.rotation.x = -Math.PI / 2;
-                            ash.position.y = 0.01;
-                            cf.mesh.add(ash);
-                            cf.ashMesh = ash;
-                        }
-
-                        this.showItemMsg('🔥 Fogata apagada');
+                        this.extinguishCampfire(cf);
                     } else {
                         this.useBottle();          // fill or drink
                     }
@@ -562,11 +546,12 @@ class RealWorldSim {
                     this.useLighter();         // light fire
                 } else if (activeType === 'Muslo' || activeType === 'Costilla') {
                     this.tryCookFood();        // cook meat near fire
-                } else {
+                } else if (activeItem && !NON_COMBAT.includes(activeType)) {
                     this.setAiming(true);      // weapons: zoom in
                 }
             }
         });
+
         this.renderer.domElement.addEventListener('mouseup', (e) => {
             const activeItem = this.inventory[this.activeSlot];
             const activeType = activeItem ? activeItem.type : null;
@@ -576,15 +561,38 @@ class RealWorldSim {
                 this.fireWeapon();
                 // Sound removed as per user request
             }
-            if (e.button === 2 && !NON_COMBAT.includes(activeType)) {
+            if (e.button === 2 && activeType && !NON_COMBAT.includes(activeType)) {
                 this.setAiming(false);
             }
         });
+
         // Block RMB context menu
         this.renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
 
         // Click to lock pointer (keep existing behavior)
         this.renderer.domElement.addEventListener('click', () => this.renderer.domElement.requestPointerLock());
+    }
+
+    extinguishCampfire(cf) {
+        if (!cf || !cf.isLit) return;
+        cf.isLit = false;
+        cf.duration = 0;
+        if (cf.fireGroup) {
+            cf.mesh.remove(cf.fireGroup);
+            cf.fireGroup = null;
+        }
+
+        // Leave ASHES
+        if (!cf.ashMesh) {
+            const ashGeo = new THREE.CircleGeometry(0.5, 12);
+            const ashMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 1.0 });
+            const ash = new THREE.Mesh(ashGeo, ashMat);
+            ash.rotation.x = -Math.PI / 2;
+            ash.position.y = 0.01;
+            cf.mesh.add(ash);
+            cf.ashMesh = ash;
+        }
+        this.showItemMsg('🔥 Fogata apagada');
     }
 
     // ─────────────────────────────────────────────
@@ -1160,22 +1168,34 @@ class RealWorldSim {
         let cf = this.findNearbyCampfire(px, pz, 1.5);
 
         if (cf) {
-            if (cf.sticks >= 5) {
-                this.showItemMsg('🔥 La pila ya tiene 5 ramas — usá el encendedor');
+            if (cf.sticks >= 20) {
+                this.showItemMsg('🔥 La fogata ya tiene el máximo de ramas (20)');
                 return;
             }
             cf.sticks++;
+            if (cf.isLit) {
+                cf.duration += 20;
+                cf.maxDuration += 20;
+
+                // Update visual scale instantly
+                const s = cf.sticks / 2;
+                if (cf.fireMesh) cf.fireMesh.userData.baseScale = s;
+                if (cf.fireLight) {
+                    cf.fireLight.intensity = 15 * s;
+                    cf.fireLight.distance = 12 * s;
+                }
+            }
             this.addStickToVisual(cf);
-            this.showItemMsg(`🪵 Rama añadida (${cf.sticks}/5)`);
+            this.showItemMsg(`🪵 Rama añadida (${cf.sticks}/20)`);
         } else {
             // Create new pile
             const g = new THREE.Group();
             g.position.set(px, py, pz);
             this.scene.add(g);
-            cf = { mesh: g, sticks: 1, isLit: false, x: px, z: pz };
+            cf = { mesh: g, sticks: 1, isLit: false, x: px, z: pz, duration: 0, maxDuration: 0 };
             this.campfires.push(cf);
             this.addStickToVisual(cf);
-            this.showItemMsg('🪵 Iniciando fogata (1/5 ramas)');
+            this.showItemMsg('🪵 Iniciando fogata (1 rama — ya podés usar el encendedor)');
         }
 
         // 4. Consume 1 item
@@ -1196,8 +1216,8 @@ class RealWorldSim {
             this.showItemMsg('🔥 No hay ninguna fogata cerca');
             return;
         }
-        if (cf.sticks < 5) {
-            this.showItemMsg('🔥 Faltan ramas (${cf.sticks}/5) para prender el fuego');
+        if (cf.sticks < 1) {
+            this.showItemMsg(`🔥 Faltan ramas (${cf.sticks}/1) para prender el fuego`);
             return;
         }
         if (cf.isLit) {
@@ -1205,13 +1225,9 @@ class RealWorldSim {
             return;
         }
 
-        // Remove ash if re-lighting
-        if (cf.ashMesh) {
-            cf.mesh.remove(cf.ashMesh);
-            cf.ashMesh = null;
-        }
-
         cf.isLit = true;
+        cf.duration = cf.sticks * 20; // 20 seconds per stick
+        cf.maxDuration = cf.duration;
 
         // Group fire visuals
         const fg = new THREE.Group();
@@ -1219,6 +1235,7 @@ class RealWorldSim {
         cf.mesh.add(fg);
 
         // Visual fire
+        const s = cf.sticks / 2; // 2 sticks = 1.0, 5 sticks = 2.5
         const fireGeo = new THREE.ConeGeometry(0.35, 0.7, 8);
         const fireMat = new THREE.MeshStandardMaterial({
             color: 0xff4400,
@@ -1228,25 +1245,34 @@ class RealWorldSim {
             opacity: 0.8
         });
         const fire = new THREE.Mesh(fireGeo, fireMat);
-        fire.position.set(0, 0.35, 0);
+        fire.position.set(0, 0.35 * s, 0);
+        fire.scale.set(s, s, s);
+        fire.userData.baseScale = s;
         fg.add(fire);
         cf.fireMesh = fire;
 
         // Add a point light for the fire
-        const light = new THREE.PointLight(0xff6600, 15, 12);
-        light.position.set(0, 0.5, 0);
+        const light = new THREE.PointLight(0xff6600, 15 * s, 12 * s);
+        light.position.set(0, 0.5 * s, 0);
         fg.add(light);
+        cf.fireLight = light;
+
+        // Progress Bar (Floating)
+        const bar = this.createFireProgressBar();
+        bar.position.set(0, 1.8 * s + 0.4, 0);
+        fg.add(bar);
+        cf.barMesh = bar;
 
         // Smoke particles
         cf.smokeParticles = [];
-        const smokeGeo = new THREE.SphereGeometry(0.18, 5, 5); // slightly larger
+        const smokeGeo = new THREE.SphereGeometry(0.18, 5, 5);
         const smokeMat = new THREE.MeshStandardMaterial({ color: 0x555555, transparent: true, opacity: 0.5 });
-        for (let i = 0; i < 25; i++) { // More particles
-            const s = new THREE.Mesh(smokeGeo, smokeMat.clone());
-            s.position.set((Math.random() - 0.5) * 0.3, 0.5 + Math.random() * 15, (Math.random() - 0.5) * 0.3);
-            s.scale.setScalar(0.7 + Math.random() * 1.5);
-            fg.add(s);
-            cf.smokeParticles.push({ mesh: s, speed: 0.8 + Math.random() * 2.0, offset: Math.random() * Math.PI * 2 });
+        for (let i = 0; i < 25; i++) {
+            const sm = new THREE.Mesh(smokeGeo, smokeMat.clone());
+            sm.position.set((Math.random() - 0.5) * 0.3, 0.5 + Math.random() * 15, (Math.random() - 0.5) * 0.3);
+            sm.scale.setScalar((0.7 + Math.random() * 1.5) * s);
+            fg.add(sm);
+            cf.smokeParticles.push({ mesh: sm, speed: 0.8 + Math.random() * 2.0, offset: Math.random() * Math.PI * 2 });
         }
 
         this.showItemMsg('🔥 ¡Fogata encendida!');
@@ -1254,14 +1280,47 @@ class RealWorldSim {
 
     updateCampfires(dt) {
         const time = performance.now() * 0.001;
-        for (const cf of this.campfires) {
-            if (!cf.isLit || !cf.fireGroup) continue;
+        for (let i = this.campfires.length - 1; i >= 0; i--) {
+            const cf = this.campfires[i];
+            if (!cf.isLit) continue;
+
+            cf.duration -= dt;
+            if (cf.duration <= 0) {
+                this.extinguishCampfire(cf);
+                continue;
+            }
+
+            if (!cf.fireGroup) continue;
 
             // Flicker fire
             if (cf.fireMesh) {
-                cf.fireMesh.scale.x = 1 + Math.sin(time * 20) * 0.1;
-                cf.fireMesh.scale.z = 1 + Math.cos(time * 22) * 0.1;
-                cf.fireMesh.scale.y = 1 + Math.sin(time * 15) * 0.15;
+                const s = cf.fireMesh.userData.baseScale || 1.0;
+                cf.fireMesh.scale.x = s * (1 + Math.sin(time * 20) * 0.1);
+                cf.fireMesh.scale.z = s * (1 + Math.cos(time * 22) * 0.1);
+                cf.fireMesh.scale.y = s * (1 + Math.sin(time * 15) * 0.15);
+            }
+
+            // Update Progress Bar
+            if (cf.barMesh) {
+                const dir = new THREE.Vector3();
+                this.camera.getWorldDirection(dir);
+                const toFire = cf.mesh.position.clone().sub(this.player.position).normalize();
+                const dot = dir.dot(toFire);
+                const dist = this.player.position.distanceTo(cf.mesh.position);
+
+                // Visible if looking at it and within 5 meters
+                const isViewing = dot > 0.96 && dist < 5;
+                cf.barMesh.visible = isViewing;
+
+                if (isViewing) {
+                    const pct = Math.max(0, cf.duration / cf.maxDuration);
+                    const fill = cf.barMesh.children[1];
+                    if (fill) {
+                        fill.scale.x = pct;
+                        fill.position.x = -0.5 * (1 - pct);
+                    }
+                    cf.barMesh.lookAt(this.camera.position);
+                }
             }
 
             // Animate smoke
@@ -1285,7 +1344,7 @@ class RealWorldSim {
             const dz = cf.z - this.player.position.z;
             const distSq = dx * dx + dz * dz;
 
-            if (distSq < 1.1 * 1.1) {
+            if (distSq < (1.1 * (cf.fireMesh ? cf.fireMesh.userData.baseScale : 1.0)) ** 2) {
                 // Take damage over time
                 this.health -= 12 * dt; // approx 12 hp per second
                 if (Math.random() < 0.15) this.triggerDamageFlash(); // flicker red
@@ -1834,7 +1893,20 @@ class RealWorldSim {
             g.add(tail);
         }
 
-        g.add(torso, head, hair, legL, legR, shoeL, shoeR, armL, armR);
+        // Face Features: Eyes and Mouth
+        const eyeGeo = new THREE.BoxGeometry(0.06, 0.04, 0.05);
+        const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 1 });
+        const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+        eyeL.position.set(0.08, 0.90, 0.13);
+        const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+        eyeR.position.set(-0.08, 0.90, 0.13);
+
+        const mouthGeo = new THREE.BoxGeometry(0.12, 0.02, 0.05);
+        const mouthMat = new THREE.MeshStandardMaterial({ color: 0x331111, roughness: 1 });
+        const mouth = new THREE.Mesh(mouthGeo, mouthMat);
+        mouth.position.set(0, 0.82, 0.13);
+
+        g.add(torso, head, hair, legL, legR, shoeL, shoeR, armL, armR, eyeL, eyeR, mouth);
 
         // ── Name Tag ─────────────────────────────
         const nameTag = this.createNameTag(this.playerName);
@@ -1857,57 +1929,68 @@ class RealWorldSim {
     // ─────────────────────────────────────────────
     // ANIMATION
     // ─────────────────────────────────────────────
-    animatePlayerMesh(isMoving, isCrouching, isSprinting, dt) {
+    animatePlayerMesh(isMoving, isCrouching, isSprinting, isSwimming, dt) {
         if (!this.playerMesh || !this.playerMesh.visible) return;
         const p = this.meshParts;
         if (!p.legL) return;
 
-        // Advance animation clock (only while moving)
-        const freq = isSprinting ? 9 : (isCrouching ? 4 : 6);
-        if (isMoving) {
+        // Transition Swimming State (Smooth rotation to horizontal)
+        const swimSpeed = 10 * dt;
+        const targetRotX = isSwimming ? -Math.PI / 2.2 : 0;
+        this.playerMesh.rotation.x += (targetRotX - this.playerMesh.rotation.x) * swimSpeed;
+
+        // Advance animation clock
+        const freq = isSwimming ? 10 : (isSprinting ? 9 : (isCrouching ? 4 : 6));
+        if (isMoving || isSwimming) {
             this.animTime += dt * freq;
-            // Record footsteps based on animTime cycle
-            this.footstepTime += dt * (isSprinting ? 1.5 : 1.0);
-            if (this.footstepTime > 0.35) {
-                this.playSound('step', isSprinting ? 0.35 : 0.2);
-                this.footstepTime = 0;
+            if (!isSwimming) { // No footsteps in water
+                this.footstepTime += dt * (isSprinting ? 1.5 : 1.0);
+                if (this.footstepTime > 0.35) {
+                    this.playSound('step', isSprinting ? 0.35 : 0.2);
+                    this.footstepTime = 0;
+                }
             }
         } else {
-            this.animTime *= 0.75; // coast to idle
+            this.animTime *= 0.75;
             this.footstepTime = 0;
         }
 
         const swing = Math.sin(this.animTime);
-        const legSwing = swing * (isSprinting ? 0.55 : (isCrouching ? 0.30 : 0.42));
-        const armSwing = swing * (isSprinting ? 0.50 : (isCrouching ? 0.18 : 0.35));
 
-        // ── Leg swing ───────────────────────────────
-        p.legL.rotation.x = legSwing;
-        p.legR.rotation.x = -legSwing;
+        if (isSwimming) {
+            // CRAWL Swimming Animation
+            const crawlCycle = this.animTime * 0.8;
+            p.armL.rotation.x = Math.sin(crawlCycle) * 1.8;
+            p.armR.rotation.x = Math.sin(crawlCycle + Math.PI) * 1.8;
+            p.legL.rotation.x = Math.sin(crawlCycle * 2) * 0.3;
+            p.legR.rotation.x = Math.sin(crawlCycle * 2 + Math.PI) * 0.3;
 
-        // Crouch: only legs lower (knees bend) — torso/upper body stays upright
-        const legTargetY = isCrouching ? 0.14 : 0.25;  // bring hips closer to ground
-        p.legL.position.y += (legTargetY - p.legL.position.y) * 0.2;
-        p.legR.position.y += (legTargetY - p.legR.position.y) * 0.2;
-        // Shoes follow legs
-        const shoeTargetY = isCrouching ? 0.025 : 0.035;
-        p.shoeL.position.y += (shoeTargetY - p.shoeL.position.y) * 0.2;
-        p.shoeR.position.y += (shoeTargetY - p.shoeR.position.y) * 0.2;
+            p.torso.position.y = 0.6;
+            p.head.position.y = 0.87;
+        } else {
+            const legSwing = swing * (isSprinting ? 0.55 : (isCrouching ? 0.30 : 0.42));
+            const armSwing = swing * (isSprinting ? 0.50 : (isCrouching ? 0.18 : 0.35));
 
-        // ── Arm swing ───────────────────────────────
-        p.armL.rotation.x = -armSwing;
-        p.armR.rotation.x = armSwing;
+            p.legL.rotation.x = legSwing;
+            p.legR.rotation.x = -legSwing;
 
-        // ── Torso/head bob while running (subtle) ───
-        const bob = Math.abs(swing) * (isSprinting ? 0.012 : (isMoving ? 0.005 : 0));
-        p.torso.position.y = 0.60 + bob;
-        p.head.position.y = 0.87 + bob;
+            const legTargetY = isCrouching ? 0.14 : 0.25;
+            p.legL.position.y += (legTargetY - p.legL.position.y) * 0.2;
+            p.legR.position.y += (legTargetY - p.legR.position.y) * 0.2;
+            const shoeTargetY = isCrouching ? 0.025 : 0.035;
+            p.shoeL.position.y += (shoeTargetY - p.shoeL.position.y) * 0.2;
+            p.shoeR.position.y += (shoeTargetY - p.shoeR.position.y) * 0.2;
 
-        // Torso/head stay NEUTRAL always (no tilt, no scale)
+            p.armL.rotation.x = -armSwing;
+            p.armR.rotation.x = armSwing;
+
+            const bob = Math.abs(swing) * (isSprinting ? 0.012 : (isMoving ? 0.005 : 0));
+            p.torso.position.y = 0.60 + bob;
+            p.head.position.y = 0.87 + bob;
+        }
+
         p.torso.rotation.x = 0;
         p.head.rotation.x = 0;
-
-        // Mesh scale stays constant — no whole-body compression
         this.playerMesh.scale.set(1.5, 1.7, 1.5);
     }
     // ─────────────────────────────────────────────
@@ -2419,7 +2502,74 @@ class RealWorldSim {
     // ─────────────────────────────────────────────
     // ANIMALS
     // ─────────────────────────────────────────────
+    createRabbit() {
+        const g = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), new THREE.MeshStandardMaterial({ color: 0x998877 }));
+        body.scale.set(1.4, 1, 1);
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), new THREE.MeshStandardMaterial({ color: 0x998877 }));
+        head.position.set(0.18, 0.15, 0);
+        const ears = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.2, 0.08), new THREE.MeshStandardMaterial({ color: 0xaa9988 }));
+        ears.position.set(0.2, 0.3, 0);
+        g.add(body, head, ears);
+        return g;
+    }
+
+    createDeer() {
+        const g = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 0.3), new THREE.MeshStandardMaterial({ color: 0x8b5a2b }));
+        body.position.y = 0.8;
+        const neck = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.5, 0.15), new THREE.MeshStandardMaterial({ color: 0x8b5a2b }));
+        neck.position.set(0.3, 1.2, 0); neck.rotation.z = -0.4;
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.15, 0.15), new THREE.MeshStandardMaterial({ color: 0x8b5a2b }));
+        head.position.set(0.45, 1.4, 0);
+        const legs = [];
+        for (let i = 0; i < 4; i++) {
+            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.08), new THREE.MeshStandardMaterial({ color: 0x5d3a1a }));
+            leg.position.set(i < 2 ? 0.2 : -0.2, 0.4, i % 2 ? 0.1 : -0.1);
+            legs.push(leg);
+        }
+        if (Math.random() > 0.5) {
+            const antlers = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.4, 0.4), new THREE.MeshStandardMaterial({ color: 0x4a2a1a }));
+            antlers.position.set(0.45, 1.65, 0); g.add(antlers);
+        }
+        g.add(body, neck, head, ...legs);
+        return g;
+    }
+
+    spawnAnimal(type) {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 50 + Math.random() * (this.arenaRadius - 100);
+        const x = Math.cos(angle) * dist, z = Math.sin(angle) * dist;
+        const riverZ = Math.sin(x / 150) * 120 + 350;
+        if (Math.abs(z - riverZ) < 80) return;
+
+        const mesh = (type === 'rabbit' ? this.createRabbit() : this.createDeer());
+        mesh.position.set(x, 0, z);
+        this.scene.add(mesh);
+        this.animals.push({
+            mesh, type, state: 'idle', t: 0,
+            pos: mesh.position.clone(), rot: Math.random() * Math.PI * 2,
+            hp: (type === 'rabbit' ? 1 : 2),
+            maxHp: (type === 'rabbit' ? 1 : 2),
+            radius: (type === 'rabbit' ? 0.4 : 0.8),
+            height: (type === 'rabbit' ? 0.5 : 1.6)
+        });
+    }
+
+    updateAnimalSpawning(dt) {
+        this.animalSpawnTimer += dt;
+        if (this.animalSpawnTimer >= 30) {
+            this.animalSpawnTimer = 0;
+            for (let i = 0; i < 5; i++) {
+                this.spawnAnimal(Math.random() > 0.6 ? 'deer' : 'rabbit');
+            }
+        }
+    }
     createAnimals() {
+        for (let i = 0; i < 100; i++) this.spawnAnimal('rabbit');
+        for (let i = 0; i < 50; i++) this.spawnAnimal('deer');
+    }
+    _unused_createAnimals() {
         const createRabbit = () => {
             const g = new THREE.Group();
             const body = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), new THREE.MeshStandardMaterial({ color: 0x998877 }));
@@ -2457,10 +2607,15 @@ class RealWorldSim {
 
         // Spawn 100 Rabbits
         for (let i = 0; i < 100; i++) {
-            const mesh = createRabbit();
             const angle = Math.random() * Math.PI * 2;
             const dist = 50 + Math.random() * (this.arenaRadius - 100);
             const x = Math.cos(angle) * dist, z = Math.sin(angle) * dist;
+
+            // Avoid river during spawn
+            const riverZ = Math.sin(x / 150) * 120 + 350;
+            if (Math.abs(z - riverZ) < 80) { i--; continue; }
+
+            const mesh = createRabbit();
             mesh.position.set(x, 0, z);
             this.scene.add(mesh);
             this.animals.push({
@@ -2472,10 +2627,15 @@ class RealWorldSim {
 
         // Spawn 50 Deer
         for (let i = 0; i < 50; i++) {
-            const mesh = createDeer();
             const angle = Math.random() * Math.PI * 2;
             const dist = 50 + Math.random() * (this.arenaRadius - 100);
             const x = Math.cos(angle) * dist, z = Math.sin(angle) * dist;
+
+            // Avoid river during spawn
+            const riverZ = Math.sin(x / 150) * 120 + 350;
+            if (Math.abs(z - riverZ) < 80) { i--; continue; }
+
+            const mesh = createDeer();
             mesh.position.set(x, 0, z);
             this.scene.add(mesh);
             this.animals.push({
@@ -2534,12 +2694,24 @@ class RealWorldSim {
                 a.mesh.position.z += vz;
 
                 // River avoidance logic
-                const riverZ = Math.sin(a.mesh.position.x / 150) * 120 + 350;
-                if (Math.abs(a.mesh.position.z - riverZ) < 42) {
+                const xr = a.mesh.position.x;
+                const zr = a.mesh.position.z;
+                const riverZ = Math.sin(xr / 150) * 120 + 350;
+                const distToRiver = Math.abs(zr - riverZ);
+
+                if (distToRiver < 70) {
                     // Too close to river! Step back and turn around
-                    a.mesh.position.x -= vx;
-                    a.mesh.position.z -= vz;
-                    a.targetRot += Math.PI; // Pick a different direction
+                    a.mesh.position.x -= vx * 1.5;
+                    a.mesh.position.z -= vz * 1.5;
+
+                    // If still too close (e.g. pushing in), force push away
+                    if (Math.abs(a.mesh.position.z - riverZ) < 65) {
+                        const pushDir = zr > riverZ ? 1 : -1;
+                        a.mesh.position.z += pushDir * 2;
+                    }
+
+                    a.targetRot = Math.atan2(a.mesh.position.x - (a.mesh.position.x + vx), a.mesh.position.z - riverZ) + (Math.random() - 0.5);
+                    a.targetRot += Math.PI; // Pick a general away direction
                     a.t = 1; // pause shortly
                 }
 
@@ -2629,7 +2801,7 @@ class RealWorldSim {
             this.updateFOV(dt);
             this.updateAudio(dt);
             this.updateCamera(this.player.height);
-            this.animatePlayerMesh(false, false, false, dt);
+            this.animatePlayerMesh(false, false, false, false, dt);
             return;
         }
 
@@ -2640,6 +2812,7 @@ class RealWorldSim {
         // ── 2. Global World State (Always Update) ───────
         this.updateSurvival(dt);
         this.updateAnimals(dt);
+        this.updateAnimalSpawning(dt);
         this.updateProjectiles(dt);
         this.updateDayNight(dt);
         this.updateFOV(dt);
@@ -2689,7 +2862,7 @@ class RealWorldSim {
                 this.player.isOnGround = true;
             }
 
-            this.animatePlayerMesh(false, false, false, dt);
+            this.animatePlayerMesh(false, false, false, false, dt);
             this.updateCamera(currentHeight);
             return;
         }
@@ -2764,7 +2937,7 @@ class RealWorldSim {
                 }
             }
         }
-        this.animatePlayerMesh(isMoving, this.player.isCrouching, this.isSprinting, dt);
+        this.animatePlayerMesh(isMoving, this.player.isCrouching, this.isSprinting, this.player.isSwimming || false, dt);
 
         // Vertical physics
         let groundY = 0;
@@ -2782,38 +2955,46 @@ class RealWorldSim {
         }
 
         if (inWater) {
-            const baseWater = waterSurface + currentHeight;
-            if (!this.player.isCrouching) {
-                if (this.player.position.y < baseWater - 0.05) {
-                    this.player.verticalVelocity += 0.022;
-                    this.player.verticalVelocity *= 0.82;
-                    this.player.position.y += this.player.verticalVelocity;
-                    if (this.player.position.y >= baseWater) {
-                        this.player.position.y = baseWater;
-                        this.player.verticalVelocity = 0;
-                        this.player.isOnGround = true;
-                    }
-                    this.updateCamera(currentHeight);
-                    if (this.sun) { this.sun.target.position.set(this.player.position.x, 0, this.player.position.z); this.sun.target.updateMatrixWorld(); }
-                    return;
-                } else { groundY = -15; }
-            } else {
-                this.player.isOnGround = false;
-                const sinkTargetY = -14.5 + currentHeight;
-                if (this.player.position.y > sinkTargetY + 0.05) {
-                    this.player.verticalVelocity -= 0.05;
-                    this.player.verticalVelocity = Math.max(this.player.verticalVelocity, -0.4);
-                } else {
-                    this.player.verticalVelocity = 0;
-                    this.player.position.y = sinkTargetY;
-                }
-                this.player.position.y += this.player.verticalVelocity;
-                if (this.keys[' ']) this.player.verticalVelocity = 0.15;
+            this.player.isOnGround = false;
+            const waterBaseY = waterSurface + currentHeight;
 
-                this.updateCamera(currentHeight);
-                if (this.sun) { this.sun.target.position.set(this.player.position.x, 0, this.player.position.z); this.sun.target.updateMatrixWorld(); }
-                return;
+            // Sinking/Floating Logic
+            const gravityInWater = 0.08 * dt; // Slow sinking
+            const swimPower = 0.4 * dt;    // Floating up power
+
+            if (this.keys[' ']) {
+                this.player.verticalVelocity += swimPower;
+                if (this.player.verticalVelocity > 0.15) this.player.verticalVelocity = 0.15;
+            } else {
+                this.player.verticalVelocity -= gravityInWater;
             }
+
+            // Viscosity / Damping
+            this.player.verticalVelocity *= Math.pow(0.5, dt * 8);
+            this.player.position.y += this.player.verticalVelocity;
+
+            // Floor of the river
+            const riverFloorY = -14.8 + currentHeight;
+            if (this.player.position.y < riverFloorY) {
+                this.player.position.y = riverFloorY;
+                this.player.verticalVelocity = 0;
+            }
+
+            // Surface limit (can't leap too high)
+            const maxSurfaceY = waterSurface + currentHeight + 0.4;
+            if (this.player.position.y > maxSurfaceY) {
+                this.player.position.y = maxSurfaceY;
+                this.player.verticalVelocity = 0;
+            }
+
+            // Set Swimming State (if body is deep enough)
+            this.player.isSwimming = (this.player.position.y < waterSurface + currentHeight - 0.2);
+
+            this.updateCamera(currentHeight);
+            if (this.sun) { this.sun.target.position.set(this.player.position.x, 0, this.player.position.z); this.sun.target.updateMatrixWorld(); }
+            return;
+        } else {
+            this.player.isSwimming = false;
         }
 
         const baseY = groundY + currentHeight;
@@ -3423,5 +3604,25 @@ class RealWorldSim {
         }
         this.animals.splice(index, 1);
         this.showItemMsg(`💥 ${animal.type.toUpperCase()} ELIMINADO`);
+    }
+
+    createFireProgressBar() {
+        const group = new THREE.Group();
+
+        // Background
+        const bgGeo = new THREE.PlaneGeometry(1.0, 0.12);
+        const bgMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+        const bg = new THREE.Mesh(bgGeo, bgMat);
+        group.add(bg);
+
+        // Fill
+        const fillGeo = new THREE.PlaneGeometry(1.0, 0.08);
+        const fillMat = new THREE.MeshBasicMaterial({ color: 0xff9900, side: THREE.DoubleSide });
+        const fill = new THREE.Mesh(fillGeo, fillMat);
+        fill.position.z = 0.01;
+        group.add(fill); // fill is child index 1
+
+        group.visible = false;
+        return group;
     }
 }
